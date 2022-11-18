@@ -23,7 +23,7 @@
 /* maximum readahead size for node during getting data blocks */
 #define MAX_RA_NODE		128
 
-/* control the memory footprint threshold (10MB per 1GB ram) */
+/* control the memory footprint threshold (10MB per 1GB ram)，NAT使用的RAM门限值*/
 #define DEF_RAM_THRESHOLD	1
 
 /* control dirty nats ratio threshold (default: 10% over max nid count) */
@@ -193,6 +193,9 @@ static inline void get_nat_bitmap(struct f2fs_sb_info *sbi, void *addr)
 	memcpy(addr, nm_i->nat_bitmap, nm_i->bitmap_size);
 }
 
+/**根据nid读取所在块地址
+ * 注意在NAT区域中segment与其副本紧密放置，而不是分成两个部分
+*/
 static inline pgoff_t current_nat_addr(struct f2fs_sb_info *sbi, nid_t start)
 {
 	struct f2fs_nm_info *nm_i = NM_I(sbi);
@@ -204,12 +207,16 @@ static inline pgoff_t current_nat_addr(struct f2fs_sb_info *sbi, nid_t start)
 	 * OLD = (segment_off * 512) * 2 + off_in_segment
 	 * NEW = 2 * (segment_off * 512 + off_in_segment) - off_in_segment
 	 */
-	block_off = NAT_BLOCK_OFFSET(start);
 
+	//首先确定block所在块
+	block_off = NAT_BLOCK_OFFSET(start);
+	
+	//巧妙的计算所在的块地址
 	block_addr = (pgoff_t)(nm_i->nat_blkaddr +
 		(block_off << 1) -
 		(block_off & (sbi->blocks_per_seg - 1)));
 
+	//如果nat_ver_bitmap指示位为1那么再偏移一个blocks_per_seg
 	if (f2fs_test_bit(block_off, nm_i->nat_bitmap))
 		block_addr += sbi->blocks_per_seg;
 

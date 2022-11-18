@@ -27,11 +27,13 @@ static struct kmem_cache *free_nid_slab;
 static struct kmem_cache *nat_entry_set_slab;
 static struct kmem_cache *fsync_node_entry_slab;
 
-/*
+/**
  * Check whether the given nid is within node id range.
+ * 检查nid是否在合理的nid范围内,如果不合法需要检查
  */
 int f2fs_check_nid_range(struct f2fs_sb_info *sbi, nid_t nid)
-{
+{	
+	
 	if (unlikely(nid < F2FS_ROOT_INO(sbi) || nid >= NM_I(sbi)->max_nid)) {
 		set_sbi_flag(sbi, SBI_NEED_FSCK);
 		f2fs_warn(sbi, "%s: out-of-range nid=%x, run fsck to fix.",
@@ -2159,11 +2161,14 @@ static void __move_free_nid(struct f2fs_sb_info *sbi, struct free_nid *i,
 	}
 }
 
+//free_nid_bitmap按特定位更新
 static void update_free_nid_bitmap(struct f2fs_sb_info *sbi, nid_t nid,
 							bool set, bool build)
 {
 	struct f2fs_nm_info *nm_i = NM_I(sbi);
+	//计算nid所在的块偏移
 	unsigned int nat_ofs = NAT_BLOCK_OFFSET(nid);
+	//计算块内nid偏移量
 	unsigned int nid_ofs = nid - START_NID(nid);
 
 	if (!test_bit_le(nat_ofs, nm_i->nat_block_bitmap))
@@ -2183,7 +2188,9 @@ static void update_free_nid_bitmap(struct f2fs_sb_info *sbi, nid_t nid,
 	}
 }
 
-/* return if the nid is recognized as free */
+/** return if the nid is recognized as free 
+ * 判定这个nid是否是free的，如果是则会加入到free_nid的管理结构中
+*/
 static bool add_free_nid(struct f2fs_sb_info *sbi,
 				nid_t nid, bool build, bool update)
 {
@@ -2197,6 +2204,9 @@ static bool add_free_nid(struct f2fs_sb_info *sbi,
 	if (unlikely(nid == 0))
 		return false;
 
+	/**
+	 * 检查nid是否在合理范围内
+	*/
 	if (unlikely(f2fs_check_nid_range(sbi, nid)))
 		return false;
 
@@ -2276,6 +2286,7 @@ static void remove_free_nid(struct f2fs_sb_info *sbi, nid_t nid)
 		kmem_cache_free(free_nid_slab, i);
 }
 
+//扫描NAT page 找到 free nid 的nat entry
 static int scan_nat_page(struct f2fs_sb_info *sbi,
 			struct page *nat_page, nid_t start_nid)
 {
@@ -2285,8 +2296,10 @@ static int scan_nat_page(struct f2fs_sb_info *sbi,
 	unsigned int nat_ofs = NAT_BLOCK_OFFSET(start_nid);
 	int i;
 
+	//将nat_block_bitmap中nid所在块设置为1
 	__set_bit_le(nat_ofs, nm_i->nat_block_bitmap);
 
+	//获取块内entry偏移量
 	i = start_nid % NAT_ENTRY_PER_BLOCK;
 
 	for (; i < NAT_ENTRY_PER_BLOCK; i++, start_nid++) {
@@ -2297,10 +2310,13 @@ static int scan_nat_page(struct f2fs_sb_info *sbi,
 
 		if (blk_addr == NEW_ADDR)
 			return -EINVAL;
-
+		
+		//如果block_addr为NULL_ADDRs说明为空
 		if (blk_addr == NULL_ADDR) {
 			add_free_nid(sbi, start_nid, true, true);
-		} else {
+		}
+		//如果是其他情况，则需要将相应位置设置为0 
+		else {
 			spin_lock(&NM_I(sbi)->nid_list_lock);
 			update_free_nid_bitmap(sbi, start_nid, false, true);
 			spin_unlock(&NM_I(sbi)->nid_list_lock);
@@ -2368,17 +2384,20 @@ static int __f2fs_build_free_nids(struct f2fs_sb_info *sbi,
 {
 	struct f2fs_nm_info *nm_i = NM_I(sbi);
 	int i = 0, ret;
+	//继续向后扫描可以使用的free nid
 	nid_t nid = nm_i->next_scan_nid;
 
 	if (unlikely(nid >= nm_i->max_nid))
 		nid = 0;
-
+	
+	//确定nid是从BLOCK的起点处开始
 	if (unlikely(nid % NAT_ENTRY_PER_BLOCK))
 		nid = NAT_BLOCK_OFFSET(nid) * NAT_ENTRY_PER_BLOCK;
 
-	/* Enough entries */
+	/* Enough entries ，如果存在超过一个块的Free Nid*/
 	if (nm_i->nid_cnt[FREE_NID] >= NAT_ENTRY_PER_BLOCK)
 		return 0;
+
 
 	if (!sync && !f2fs_available_free_memory(sbi, FREE_NIDS))
 		return 0;
@@ -2391,20 +2410,24 @@ static int __f2fs_build_free_nids(struct f2fs_sb_info *sbi,
 			return 0;
 	}
 
-	/* readahead nat pages to be scanned */
+	/* readahead nat pages to be scanned ,根据nid所在的block读取磁盘上的8个NAT block*/
 	f2fs_ra_meta_pages(sbi, NAT_BLOCK_OFFSET(nid), FREE_NID_PAGES,
 							META_NAT, true);
-
+	
+	//linux内核的同步机制，获取nat_tree的信号量，如果被其他写者持有，则会陷入睡眠
 	down_read(&nm_i->nat_tree_lock);
 
 	while (1) {
+		//如果nid所在块在nat_block_bitmap中为0
 		if (!test_bit_le(NAT_BLOCK_OFFSET(nid),
 						nm_i->nat_block_bitmap)) {
+			//获取当前的nat page
 			struct page *page = get_current_nat_page(sbi, nid);
 
 			if (IS_ERR(page)) {
 				ret = PTR_ERR(page);
 			} else {
+				//将free nid
 				ret = scan_nat_page(sbi, page, nid);
 				f2fs_put_page(page, 1);
 			}
@@ -3032,22 +3055,26 @@ static int __get_nat_bitmaps(struct f2fs_sb_info *sbi)
 	return 0;
 }
 
+//加载已经分配的bitmap中的信息
 static inline void load_free_nid_bitmap(struct f2fs_sb_info *sbi)
 {
 	struct f2fs_nm_info *nm_i = NM_I(sbi);
 	unsigned int i = 0;
 	nid_t nid, last_nid;
-
+	//验证打开了CP_NAT_BITS_FLAG
 	if (!enabled_nat_bits(sbi, NULL))
 		return;
 
+	//遍历寻找空的NAT block
 	for (i = 0; i < nm_i->nat_blocks; i++) {
 		i = find_next_bit_le(nm_i->empty_nat_bits, nm_i->nat_blocks, i);
 		if (i >= nm_i->nat_blocks)
 			break;
-
+		
+		//设置nat_block_bitmap
 		__set_bit_le(i, nm_i->nat_block_bitmap);
-
+		
+		//确定这个块的nid范围
 		nid = i * NAT_ENTRY_PER_BLOCK;
 		last_nid = nid + NAT_ENTRY_PER_BLOCK;
 
@@ -3056,12 +3083,13 @@ static inline void load_free_nid_bitmap(struct f2fs_sb_info *sbi)
 			update_free_nid_bitmap(sbi, nid, true, true);
 		spin_unlock(&NM_I(sbi)->nid_list_lock);
 	}
-
+	
+	//遍历寻找满的NAT block
 	for (i = 0; i < nm_i->nat_blocks; i++) {
 		i = find_next_bit_le(nm_i->full_nat_bits, nm_i->nat_blocks, i);
 		if (i >= nm_i->nat_blocks)
 			break;
-
+		//设置nat_block_bitmap
 		__set_bit_le(i, nm_i->nat_block_bitmap);
 	}
 }
@@ -3082,19 +3110,28 @@ static int init_node_manager(struct f2fs_sb_info *sbi)
 	 *  nat的segment_COUNT_NAT包含了两份互为备份的nat，因此除以2
 	*/
 	nat_segs = le32_to_cpu(sb_raw->segment_count_nat) >> 1;
-	nm_i->nat_blocks = nat_segs << le32_to_cpu(sb_raw->log_blocks_per_seg);
-	nm_i->max_nid = NAT_ENTRY_PER_BLOCK * nm_i->nat_blocks;
+	nm_i->nat_blocks = nat_segs << le32_to_cpu(sb_raw->log_blocks_per_seg);	//计算nat块个数
+	nm_i->max_nid = NAT_ENTRY_PER_BLOCK * nm_i->nat_blocks;					//计算出NAT表项数，从而得出最大nid
 
-	/* not used nids: 0, node, meta, (and root counted as valid node) */
+	/**
+	 * not used nids: 0, node, meta, (and root counted as valid node) 
+	 * 计算当前剩余可用的nid数量
+	 * 初始化nid_cnt各个类别的数组的数量
+	*/
 	nm_i->available_nids = nm_i->max_nid - sbi->total_valid_node_count -
 						F2FS_RESERVED_NODE_NUM;
 	nm_i->nid_cnt[FREE_NID] = 0;
 	nm_i->nid_cnt[PREALLOC_NID] = 0;
 	nm_i->nat_cnt = 0;
+	//一些门限值
 	nm_i->ram_thresh = DEF_RAM_THRESHOLD;
 	nm_i->ra_nid_pages = DEF_RA_NID_PAGES;
+	//脏nat刷盘比例？	
 	nm_i->dirty_nats_ratio = DEF_DIRTY_NAT_RATIO_THRESHOLD;
 
+	/**
+	 * 使用了一个前缀树+链表的结构构建的类HASHMAP结构，用于缓存free_nid的entry
+	*/
 	INIT_RADIX_TREE(&nm_i->free_nid_root, GFP_ATOMIC);
 	INIT_LIST_HEAD(&nm_i->free_nid_list);
 	INIT_RADIX_TREE(&nm_i->nat_root, GFP_NOIO);
@@ -3105,10 +3142,14 @@ static int init_node_manager(struct f2fs_sb_info *sbi)
 	mutex_init(&nm_i->build_lock);
 	spin_lock_init(&nm_i->nid_list_lock);
 	init_rwsem(&nm_i->nat_tree_lock);
-
+	
+	//nm_i用于分配下一个可用nid,每次分配后更新next_scan_nid的值
 	nm_i->next_scan_nid = le32_to_cpu(sbi->ckpt->next_free_nid);
+	//类似的，NAT_ver_bitmap的大小
 	nm_i->bitmap_size = __bitmap_size(sbi, NAT_BITMAP);
+	//version_bitmap的内存地址
 	version_bitmap = __bitmap_ptr(sbi, NAT_BITMAP);
+	//拷贝至nm_i
 	nm_i->nat_bitmap = kmemdup(version_bitmap, nm_i->bitmap_size,
 					GFP_KERNEL);
 	if (!nm_i->nat_bitmap)
@@ -3128,11 +3169,13 @@ static int init_node_manager(struct f2fs_sb_info *sbi)
 	return 0;
 }
 
+//初始化free nid 缓存
 static int init_free_nid_cache(struct f2fs_sb_info *sbi)
 {
 	struct f2fs_nm_info *nm_i = NM_I(sbi);
 	int i;
-
+	
+	//分配free_nid_bitmap空间
 	nm_i->free_nid_bitmap =
 		f2fs_kvzalloc(sbi, array_size(sizeof(unsigned char *),
 					      nm_i->nat_blocks),
@@ -3140,18 +3183,22 @@ static int init_free_nid_cache(struct f2fs_sb_info *sbi)
 	if (!nm_i->free_nid_bitmap)
 		return -ENOMEM;
 
+	//为每个nat block分配一个空间
+	//这个空间作为这个block内的nat entry的bitmap（向上取整的long）
+	//我猜测用于表示对应的nat entry是否被加载到了内存
 	for (i = 0; i < nm_i->nat_blocks; i++) {
 		nm_i->free_nid_bitmap[i] = f2fs_kvzalloc(sbi,
 			f2fs_bitmap_size(NAT_ENTRY_PER_BLOCK), GFP_KERNEL);
 		if (!nm_i->free_nid_bitmap[i])
 			return -ENOMEM;
 	}
-
+	
+	
 	nm_i->nat_block_bitmap = f2fs_kvzalloc(sbi, nm_i->nat_blocks / 8,
 								GFP_KERNEL);
 	if (!nm_i->nat_block_bitmap)
 		return -ENOMEM;
-
+	
 	nm_i->free_nid_count =
 		f2fs_kvzalloc(sbi, array_size(sizeof(unsigned short),
 					      nm_i->nat_blocks),
@@ -3186,6 +3233,7 @@ int f2fs_build_node_manager(struct f2fs_sb_info *sbi)
 	*/
 	load_free_nid_bitmap(sbi);
 
+	//构建free nid表
 	return f2fs_build_free_nids(sbi, true, true);
 }
 

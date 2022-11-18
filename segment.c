@@ -4617,7 +4617,7 @@ static void init_dirty_segmap(struct f2fs_sb_info *sbi)
 
 	mutex_lock(&dirty_i->seglist_lock);
 	//存在疑问
-	for (segno = 0; segno < MAIN_SECS(sbi); segno += blks_per_sec) {
+	for (segno = 0; segno < MAIN_SECS(sbi); segno += segs_per_sec) {
 		valid_blocks = get_valid_blocks(sbi, segno, true);
 		secno = GET_SEC_FROM_SEG(sbi, segno);
 

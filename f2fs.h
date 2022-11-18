@@ -894,6 +894,11 @@ enum nid_state {
 	MAX_NID_STATE,
 };
 
+/**
+ * nat在内存中的管理结构f2fs_nm_info
+ * f2fs_nm_info只会读取部分NAT
+ * 
+*/
 struct f2fs_nm_info {
 	block_t nat_blkaddr;		/* base disk address of NAT */
 	nid_t max_nid;			/* maximum possible node ids */
@@ -906,10 +911,10 @@ struct f2fs_nm_info {
 	/* NAT cache management */
 	struct radix_tree_root nat_root;/* root of the nat entry cache */
 	struct radix_tree_root nat_set_root;/* root of the nat set cache */
-	struct rw_semaphore nat_tree_lock;	/* protect nat_tree_lock */
+	struct rw_semaphore nat_tree_lock;	/* protect nat_tree_lock，保护nat_tree的读写信号量*/
 	struct list_head nat_entries;	/* cached nat entry list (clean) */
 	spinlock_t nat_list_lock;	/* protect clean nat entry list */
-	unsigned int nat_cnt;		/* the # of cached nat entries */
+	unsigned int nat_cnt;		/* the # of cached nat entries，当前加载到内存的NAT结构数量*/
 	unsigned int dirty_nat_cnt;	/* total num of nat entries in set */
 	unsigned int nat_blocks;	/* # of nat blocks */
 
@@ -919,12 +924,12 @@ struct f2fs_nm_info {
 	unsigned int nid_cnt[MAX_NID_STATE];	/* the number of free node id */
 	spinlock_t nid_list_lock;	/* protect nid lists ops */
 	struct mutex build_lock;	/* lock for build free nids */
-	unsigned char **free_nid_bitmap;
-	unsigned char *nat_block_bitmap;
-	unsigned short *free_nid_count;	/* free nid count of NAT block */
+	unsigned char **free_nid_bitmap;		/*以NAT block为单位分配内存的NAT_ENTRY的bitmap，1代表为free*/	
+	unsigned char *nat_block_bitmap;		/*以NAT block为单位的bitmap*/
+	unsigned short *free_nid_count;			/* free nid count of NAT block，记录每个NAT block的free nid 的数量 */
 
 	/* for checkpoint */
-	char *nat_bitmap;		/* NAT bitmap pointer */
+	char *nat_bitmap;		/* NAT bitmap pointer ，也就是NAT ver bitmap*/
 
 	unsigned int nat_bits_blocks;	/* # of nat bits blocks */
 	unsigned char *nat_bits;	/* NAT bits blocks */
