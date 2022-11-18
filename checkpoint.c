@@ -50,9 +50,11 @@ repeat:
 	return page;
 }
 
+//读取实际的page页
 static struct page *__get_meta_page(struct f2fs_sb_info *sbi, pgoff_t index,
 							bool is_meta)
-{
+{	
+	//获取提缓冲空间
 	struct address_space *mapping = META_MAPPING(sbi);
 	struct page *page;
 	struct f2fs_io_info fio = {
@@ -70,6 +72,7 @@ static struct page *__get_meta_page(struct f2fs_sb_info *sbi, pgoff_t index,
 	if (unlikely(!is_meta))
 		fio.op_flags &= ~REQ_META;
 repeat:
+	//首先尝试从缓冲空间获取
 	page = f2fs_grab_cache_page(mapping, index, false);
 	if (!page) {
 		cond_resched();
@@ -206,7 +209,7 @@ bool f2fs_is_valid_blkaddr(struct f2fs_sb_info *sbi,
 
 /*
  * Readahead CP/NAT/SIT/SSA/POR pages
- * 读取出前端的cp/nat/sit/ssa/por
+ * 提前读取出前端的cp/nat/sit/ssa/por
  */
 int f2fs_ra_meta_pages(struct f2fs_sb_info *sbi, block_t start, int nrpages,
 							int type, bool sync)

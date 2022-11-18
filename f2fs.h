@@ -908,24 +908,27 @@ struct f2fs_nm_info {
 	unsigned int ra_nid_pages;	/* # of nid pages to be readaheaded */
 	unsigned int dirty_nats_ratio;	/* control dirty nats ratio threshold */
 
-	/* NAT cache management */
-	struct radix_tree_root nat_root;/* root of the nat entry cache */
-	struct radix_tree_root nat_set_root;/* root of the nat set cache */
+	/**
+	 * NAT cache management
+	 * 以下是用于NAT 缓存
+	 */
+	struct radix_tree_root nat_root;        /* root of the nat entry cache ，用于缓存实际项*/
+	struct radix_tree_root nat_set_root;    /* root of the nat set cache */
 	struct rw_semaphore nat_tree_lock;	/* protect nat_tree_lock，保护nat_tree的读写信号量*/
-	struct list_head nat_entries;	/* cached nat entry list (clean) */
-	spinlock_t nat_list_lock;	/* protect clean nat entry list */
+	struct list_head nat_entries;	        /* cached nat entry list (clean) ，用于维护LRU方式*/
+	spinlock_t nat_list_lock;	        /* protect clean nat entry list，用于保护上一个变量*/
 	unsigned int nat_cnt;		/* the # of cached nat entries，当前加载到内存的NAT结构数量*/
 	unsigned int dirty_nat_cnt;	/* total num of nat entries in set */
 	unsigned int nat_blocks;	/* # of nat blocks */
 
 	/* free node ids management */
-	struct radix_tree_root free_nid_root;/* root of the free_nid cache */
-	struct list_head free_nid_list;		/* list for free nids excluding preallocated nids */
+	struct radix_tree_root free_nid_root;	/* root of the free_nid cache */
+	struct list_head free_nid_list;			/* list for free nids excluding preallocated nids */
 	unsigned int nid_cnt[MAX_NID_STATE];	/* the number of free node id */
-	spinlock_t nid_list_lock;	/* protect nid lists ops */
-	struct mutex build_lock;	/* lock for build free nids */
-	unsigned char **free_nid_bitmap;		/*以NAT block为单位分配内存的NAT_ENTRY的bitmap，1代表为free*/	
-	unsigned char *nat_block_bitmap;		/*以NAT block为单位的bitmap*/
+	spinlock_t nid_list_lock;				/* protect nid lists ops */
+	struct mutex build_lock;				/* lock for build free nids */
+	unsigned char **free_nid_bitmap;		/* 以NAT block为单位分配内存的NAT_ENTRY的bitmap，1代表为free*/	
+	unsigned char *nat_block_bitmap;		/* 以NAT block为单位的bitmap*/
 	unsigned short *free_nid_count;			/* free nid count of NAT block，记录每个NAT block的free nid 的数量 */
 
 	/* for checkpoint */
@@ -2422,17 +2425,21 @@ static inline s64 valid_inode_count(struct f2fs_sb_info *sbi)
 	return percpu_counter_sum_positive(&sbi->total_valid_inode_count);
 }
 
+//读取页到page cache当中
 static inline struct page *f2fs_grab_cache_page(struct address_space *mapping,
 						pgoff_t index, bool for_write)
 {
 	struct page *page;
 
 	if (IS_ENABLED(CONFIG_F2FS_FAULT_INJECTION)) {
+		//通过内核的find_get_page方法查看是否已经缓存在了page cache中
 		if (!for_write)
 			page = find_get_page_flags(mapping, index,
 							FGP_LOCK | FGP_ACCESSED);
+		//对于写需要加锁
 		else
 			page = find_lock_page(mapping, index);
+		//如果存在直接返回
 		if (page)
 			return page;
 
@@ -2442,7 +2449,7 @@ static inline struct page *f2fs_grab_cache_page(struct address_space *mapping,
 			return NULL;
 		}
 	}
-
+	//对于读读取至页缓存
 	if (!for_write)
 		return grab_cache_page(mapping, index);
 	return grab_cache_page_write_begin(mapping, index, AOP_FLAG_NOFS);
@@ -2498,6 +2505,10 @@ static inline struct kmem_cache *f2fs_kmem_cache_create(const char *name,
 	return kmem_cache_create(name, size, 0, SLAB_RECLAIM_ACCOUNT, NULL);
 }
 
+/**对linux内核的kmem_cache_alloc进行封装，从一个给定的缓存分配一个对象
+ * 如果这个缓存目前为空，会通过cache_alloc_ref_ill()来对缓存进行增加内存
+ * 使用到的缓存，会在create时指定大小
+ */
 static inline void *f2fs_kmem_cache_alloc(struct kmem_cache *cachep,
 						gfp_t flags)
 {

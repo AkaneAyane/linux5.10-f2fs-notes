@@ -183,6 +183,7 @@ static struct nat_entry *__init_nat_entry(struct f2fs_nm_info *nm_i,
 	return ne;
 }
 
+//在nat_root基数树中查找nid
 static struct nat_entry *__lookup_nat_cache(struct f2fs_nm_info *nm_i, nid_t n)
 {
 	struct nat_entry *ne;
@@ -192,7 +193,9 @@ static struct nat_entry *__lookup_nat_cache(struct f2fs_nm_info *nm_i, nid_t n)
 	/* for recent accessed nat entry, move it to tail of lru list */
 	if (ne && !get_nat_flag(ne, IS_DIRTY)) {
 		spin_lock(&nm_i->nat_list_lock);
+                //如果lru链表非空
 		if (!list_empty(&ne->list))
+                        //将ne中list移动到nat_entries的尾部
 			list_move_tail(&ne->list, &nm_i->nat_entries);
 		spin_unlock(&nm_i->nat_list_lock);
 	}
@@ -2107,12 +2110,14 @@ const struct address_space_operations f2fs_node_aops = {
 #endif
 };
 
+//在free_nid_root基数树中查找nid
 static struct free_nid *__lookup_free_nid_list(struct f2fs_nm_info *nm_i,
 						nid_t n)
 {
 	return radix_tree_lookup(&nm_i->free_nid_root, n);
 }
 
+//将free_nid插入到free_nid基数树和lru链表中
 static int __insert_free_nid(struct f2fs_sb_info *sbi,
 				struct free_nid *i)
 {
@@ -2121,8 +2126,10 @@ static int __insert_free_nid(struct f2fs_sb_info *sbi,
 	int err = radix_tree_insert(&nm_i->free_nid_root, i->nid, i);
 	if (err)
 		return err;
-
+	
+	//free nid +1
 	nm_i->nid_cnt[FREE_NID]++;
+	//加入到lru尾部（新）
 	list_add_tail(&i->list, &nm_i->free_nid_list);
 	return 0;
 }
@@ -2190,6 +2197,7 @@ static void update_free_nid_bitmap(struct f2fs_sb_info *sbi, nid_t nid,
 
 /** return if the nid is recognized as free 
  * 判定这个nid是否是free的，如果是则会加入到free_nid的管理结构中
+ * 之所以需要判断，是因为nid存在被缓存后使用的情况
 */
 static bool add_free_nid(struct f2fs_sb_info *sbi,
 				nid_t nid, bool build, bool update)
@@ -2213,7 +2221,7 @@ static bool add_free_nid(struct f2fs_sb_info *sbi,
 	i = f2fs_kmem_cache_alloc(free_nid_slab, GFP_NOFS);
 	i->nid = nid;
 	i->state = FREE_NID;
-
+        //保证radix_tree能够插入成功，提前申请足够的内存
 	radix_tree_preload(GFP_NOFS | __GFP_NOFAIL);
 
 	spin_lock(&nm_i->nid_list_lock);
@@ -2240,29 +2248,49 @@ static bool add_free_nid(struct f2fs_sb_info *sbi,
 		 *   - __remove_nid_from_list(PREALLOC_NID)
 		 *                         - __insert_nid_to_list(FREE_NID)
 		 */
+        
+		//查找nat cache中的nid
 		ne = __lookup_nat_cache(nm_i, nid);
+		
+		/**判断这个nat entry是否ckpt了以及blkaddr非空
+		 * 如果进入分支，那么缓存表明nat entry已经被使用
+		 * 使用ret(false)来更新
+		*/
 		if (ne && (!get_nat_flag(ne, IS_CHECKPOINTED) ||
 				nat_get_blkaddr(ne) != NULL_ADDR))
 			goto err_out;
-
+		
+		/**
+		 * 进入此处说明磁盘中该项nat entry地址为空，且被ckpt了
+		 * 那么需要在free_nid_list基数树中查询nid是否被缓存了
+		 */
 		e = __lookup_free_nid_list(nm_i, nid);
+		//如果找到了
 		if (e) {
+			//如果找到了且状态为FREE_NID
 			if (e->state == FREE_NID)
 				ret = true;
 			goto err_out;
 		}
 	}
 	ret = true;
+	//如果没有找到还需要将free_nid插入进free_nid树
 	err = __insert_free_nid(sbi, i);
 err_out:
+	//判定确实为空的nid，那么进行更新
 	if (update) {
 		update_free_nid_bitmap(sbi, nid, ret, build);
+		/**如果build为false
+		 * build为true可能不需要计算？
+		*/
 		if (!build)
 			nm_i->available_nids++;
 	}
 	spin_unlock(&nm_i->nid_list_lock);
+	//提前准备内存
 	radix_tree_preload_end();
 
+	//除非插入成功，否则需要释放free_nid_slba
 	if (err)
 		kmem_cache_free(free_nid_slab, i);
 	return ret;
@@ -2312,6 +2340,7 @@ static int scan_nat_page(struct f2fs_sb_info *sbi,
 			return -EINVAL;
 		
 		//如果block_addr为NULL_ADDRs说明为空
+		
 		if (blk_addr == NULL_ADDR) {
 			add_free_nid(sbi, start_nid, true, true);
 		}
@@ -2326,6 +2355,7 @@ static int scan_nat_page(struct f2fs_sb_info *sbi,
 	return 0;
 }
 
+//浏览当前正在使用的段
 static void scan_curseg_cache(struct f2fs_sb_info *sbi)
 {
 	struct curseg_info *curseg = CURSEG_I(sbi, CURSEG_HOT_DATA);
@@ -2410,7 +2440,7 @@ static int __f2fs_build_free_nids(struct f2fs_sb_info *sbi,
 			return 0;
 	}
 
-	/* readahead nat pages to be scanned ,根据nid所在的block读取磁盘上的8个NAT block*/
+	/* readahead nat pages to be scanned ,根据nid所在的block读取磁盘上的8个NAT block到cache*/
 	f2fs_ra_meta_pages(sbi, NAT_BLOCK_OFFSET(nid), FREE_NID_PAGES,
 							META_NAT, true);
 	
@@ -2431,28 +2461,34 @@ static int __f2fs_build_free_nids(struct f2fs_sb_info *sbi,
 				ret = scan_nat_page(sbi, page, nid);
 				f2fs_put_page(page, 1);
 			}
-
+			//如果错误那么释放信号量
 			if (ret) {
 				up_read(&nm_i->nat_tree_lock);
 				f2fs_err(sbi, "NAT is corrupt, run fsck to fix it");
 				return ret;
 			}
 		}
-
+		//nid更新为下一个Block的首nid
 		nid += (NAT_ENTRY_PER_BLOCK - (nid % NAT_ENTRY_PER_BLOCK));
 		if (unlikely(nid >= nm_i->max_nid))
 			nid = 0;
-
+		
+		//读超出8页后跳出循环
 		if (++i >= FREE_NID_PAGES)
 			break;
 	}
 
-	/* go to the next free nat pages to find free nids abundantly */
+	/** go to the next free nat pages to find free nids abundantly 
+	 * 进入下一个可能找到nid
+	*/
 	nm_i->next_scan_nid = nid;
 
-	/* find free nids from current sum_pages */
+	/** find free nids from current sum_pages 
+	 * 	继续从当前在使用的段中寻找 free nid
+	*/
 	scan_curseg_cache(sbi);
 
+	//释放信号量
 	up_read(&nm_i->nat_tree_lock);
 
 	f2fs_ra_meta_pages(sbi, NAT_BLOCK_OFFSET(nm_i->next_scan_nid),
@@ -3233,7 +3269,7 @@ int f2fs_build_node_manager(struct f2fs_sb_info *sbi)
 	*/
 	load_free_nid_bitmap(sbi);
 
-	//构建free nid表
+	//构建free nid表的一部分我认为
 	return f2fs_build_free_nids(sbi, true, true);
 }
 

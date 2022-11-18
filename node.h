@@ -58,6 +58,8 @@ struct node_info {
 	unsigned char flag;	/* for node information bits */
 };
 
+
+//nat_entry用于形成链表
 struct nat_entry {
 	struct list_head list;	/* for clean or dirty nat list */
 	struct node_info ni;	/* in-memory node information */
@@ -157,10 +159,11 @@ struct nat_entry_set {
 	unsigned int entry_cnt;		/* the # of nat entries in set */
 };
 
+//free nid结构用于表示一个可用的nid
 struct free_nid {
 	struct list_head list;	/* for free node id list */
 	nid_t nid;		/* node id */
-	int state;		/* in use or not: FREE_NID or PREALLOC_NID */
+	int state;		/* in use or not: FREE_NID or PREALLOC_NID，free nid的状态，可以反应是真的free还是prealloc*/
 };
 
 static inline void next_free_nid(struct f2fs_sb_info *sbi, nid_t *nid)
