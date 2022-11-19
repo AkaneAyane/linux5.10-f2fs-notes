@@ -105,6 +105,7 @@ out:
 	return page;
 }
 
+//根据逻辑块地址读取后返回内存页
 struct page *f2fs_get_meta_page(struct f2fs_sb_info *sbi, pgoff_t index)
 {
 	return __get_meta_page(sbi, index, true);
@@ -261,7 +262,7 @@ int f2fs_ra_meta_pages(struct f2fs_sb_info *sbi, block_t start, int nrpages,
 		default:
 			BUG();
 		}
-
+		//读取到page cache中
 		page = f2fs_grab_cache_page(META_MAPPING(sbi),
 						fio.new_blkaddr, false);
 		if (!page)

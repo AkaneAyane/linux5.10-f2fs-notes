@@ -49,13 +49,14 @@ enum {
 
 /*
  * For node information
+ * node相关信息
  */
 struct node_info {
-	nid_t nid;		/* node id */
-	nid_t ino;		/* inode number of the node's owner */
-	block_t	blk_addr;	/* block address of the node */
+	nid_t nid;				/* node id */
+	nid_t ino;				/* inode number of the node's owner */
+	block_t	blk_addr;		/* block address of the node */
 	unsigned char version;	/* version of the node */
-	unsigned char flag;	/* for node information bits */
+	unsigned char flag;		/* for node information bits */
 };
 
 
@@ -96,6 +97,7 @@ static inline void set_nat_flag(struct nat_entry *ne,
 		ne->ni.flag &= ~mask;
 }
 
+//获取nat_entry的flag情况
 static inline bool get_nat_flag(struct nat_entry *ne, unsigned int type)
 {
 	unsigned char mask = 0x01 << type;
@@ -246,12 +248,14 @@ static inline void set_to_next_nat(struct f2fs_nm_info *nm_i, nid_t start_nid)
 #endif
 }
 
+//从一个node page中获取ino
 static inline nid_t ino_of_node(struct page *node_page)
 {
 	struct f2fs_node *rn = F2FS_NODE(node_page);
 	return le32_to_cpu(rn->footer.ino);
 }
 
+//从一个node page中获取nid
 static inline nid_t nid_of_node(struct page *node_page)
 {
 	struct f2fs_node *rn = F2FS_NODE(node_page);

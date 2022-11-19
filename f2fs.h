@@ -371,7 +371,7 @@ struct fsync_inode_entry {
 #define sits_in_cursum(jnl)		(le16_to_cpu((jnl)->n_sits))
 
 #define nat_in_journal(jnl, i)		((jnl)->nat_j.entries[i].ne)
-#define nid_in_journal(jnl, i)		((jnl)->nat_j.entries[i].nid)
+#define nid_in_journal(jnl, i)		((jnl)->nat_j.entries[i].nid)		//遍历nat journal中的nid
 #define sit_in_journal(jnl, i)		((jnl)->sit_j.entries[i].se)
 #define segno_in_journal(jnl, i)	((jnl)->sit_j.entries[i].segno)
 

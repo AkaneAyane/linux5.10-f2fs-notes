@@ -515,12 +515,17 @@ int f2fs_try_to_free_nats(struct f2fs_sb_info *sbi, int nr_shrink)
 	return nr - nr_shrink;
 }
 
+/**f2fs获取一个node的相关信息，通过传输nid，找到逻辑块地址
+ * 
+*/
 int f2fs_get_node_info(struct f2fs_sb_info *sbi, nid_t nid,
 						struct node_info *ni)
 {
+	//基础变量初始化
 	struct f2fs_nm_info *nm_i = NM_I(sbi);
 	struct curseg_info *curseg = CURSEG_I(sbi, CURSEG_HOT_DATA);
 	struct f2fs_journal *journal = curseg->journal;
+	//所在block的第一个nid
 	nid_t start_nid = START_NID(nid);
 	struct f2fs_nat_block *nat_blk;
 	struct page *page = NULL;
@@ -532,9 +537,13 @@ int f2fs_get_node_info(struct f2fs_sb_info *sbi, nid_t nid,
 
 	ni->nid = nid;
 
-	/* Check nat cache */
+	/** Check nat cache
+	 *  在nat cache中查找nid缓存项来获取逻辑块地址
+	 */
+	//信号量获取
 	down_read(&nm_i->nat_tree_lock);
 	e = __lookup_nat_cache(nm_i, nid);
+	//如果找到了，那么直接设置查询结果后返回
 	if (e) {
 		ni->ino = nat_get_ino(e);
 		ni->blk_addr = nat_get_blkaddr(e);
@@ -542,41 +551,56 @@ int f2fs_get_node_info(struct f2fs_sb_info *sbi, nid_t nid,
 		up_read(&nm_i->nat_tree_lock);
 		return 0;
 	}
-
+	
+	//缓存中未找到，先对ne进行初始化
 	memset(&ne, 0, sizeof(struct f2fs_nat_entry));
 
-	/* Check current segment summary */
+	/** Check current segment summary 
+	 *  从curseg中的journal开始查找是否有增量修改未写入NAT
+	*/
+	//获取journal信号量
 	down_read(&curseg->journal_rwsem);
+	//在当前段的journal部分查找
 	i = f2fs_lookup_journal_in_cursum(journal, NAT_JOURNAL, nid, 0);
+	//如果找到了那么返回i，并且读取到ne中并且返回
 	if (i >= 0) {
 		ne = nat_in_journal(journal, i);
-		node_info_from_raw_nat(ni, &ne);
+		node_info_from_raw_nat(ni, &ne);	
 	}
 	up_read(&curseg->journal_rwsem);
+	//如果找到了直接进入cache部分
 	if (i >= 0) {
 		up_read(&nm_i->nat_tree_lock);
 		goto cache;
 	}
 
-	/* Fill node_info from nat page */
+	/** Fill node_info from nat page 
+	 *  那么如果还没有找到，就需要从NAT中读取了
+	*/
+	//首先读取逻辑块地址
 	index = current_nat_addr(sbi, nid);
+	//释放信号量
 	up_read(&nm_i->nat_tree_lock);
 
 	page = f2fs_get_meta_page(sbi, index);
 	if (IS_ERR(page))
 		return PTR_ERR(page);
-
+	
+	//正常读取page后，从NAT block中读取并且拷贝到参数中
 	nat_blk = (struct f2fs_nat_block *)page_address(page);
 	ne = nat_blk->entries[nid - start_nid];
 	node_info_from_raw_nat(ni, &ne);
 	f2fs_put_page(page, 1);
 cache:
+	//检查逻辑块地址是否正常
 	blkaddr = le32_to_cpu(ne.block_addr);
 	if (__is_valid_data_blkaddr(blkaddr) &&
 		!f2fs_is_valid_blkaddr(sbi, blkaddr, DATA_GENERIC_ENHANCE))
 		return -EFAULT;
 
-	/* cache nat entry */
+	/** cache nat entry 
+	 * 对于从Journal和NAT表中读取到的NAT项进行缓存
+	*/
 	cache_nat_entry(sbi, nid, &ne);
 	return 0;
 }

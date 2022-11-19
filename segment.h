@@ -322,7 +322,7 @@ struct curseg_info {
 	struct mutex curseg_mutex;		/* lock for consistency */
 	struct f2fs_summary_block *sum_blk;	/* cached summary block 每一个segment对应一个summary block*/
 	struct rw_semaphore journal_rwsem;	/* protect journal area */
-	struct f2fs_journal *journal;		/* cached journal info 每一个segment对应一个info*/
+	struct f2fs_journal *journal;		/* cached journal info  每一个segment对应一个sit_journal_entry ?*/
 	unsigned char alloc_type;		/* current allocation type */
 	unsigned short seg_type;		/* segment type like CURSEG_XXX_TYPE */
 	unsigned int segno;			/* current segment number 当前的segment号*/
@@ -346,7 +346,7 @@ static inline struct curseg_info *CURSEG_I(struct f2fs_sb_info *sbi, int type)
 	return (struct curseg_info *)(SM_I(sbi)->curseg_array + type);
 }
 
-//获取内存seg_entry
+//从sit_i获取内存seg_entry
 static inline struct seg_entry *get_seg_entry(struct f2fs_sb_info *sbi,
 						unsigned int segno)
 {

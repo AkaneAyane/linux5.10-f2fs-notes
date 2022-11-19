@@ -3953,12 +3953,16 @@ void f2fs_write_node_summaries(struct f2fs_sb_info *sbi, block_t start_blk)
 	write_normal_summaries(sbi, start_blk, CURSEG_HOT_NODE);
 }
 
+/**在current 段的journal中查找特定项
+ * 
+*/
 int f2fs_lookup_journal_in_cursum(struct f2fs_journal *journal, int type,
 					unsigned int val, int alloc)
 {
 	int i;
-
+	//如果是nat_journal
 	if (type == NAT_JOURNAL) {
+		//遍历journal，如果找到了返回第几项i
 		for (i = 0; i < nats_in_cursum(journal); i++) {
 			if (le32_to_cpu(nid_in_journal(journal, i)) == val)
 				return i;

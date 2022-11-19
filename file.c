@@ -4049,6 +4049,7 @@ static ssize_t f2fs_file_read_iter(struct kiocb *iocb, struct iov_iter *iter)
 	return ret;
 }
 
+//数据写入文件之前的预处理
 static ssize_t f2fs_file_write_iter(struct kiocb *iocb, struct iov_iter *from)
 {
 	struct file *file = iocb->ki_filp;
@@ -4118,7 +4119,9 @@ static ssize_t f2fs_file_write_iter(struct kiocb *iocb, struct iov_iter *from)
 		}
 		preallocated = true;
 		target_size = iocb->ki_pos + iov_iter_count(from);
-
+		/**
+		 * f2fs的预处理
+		*/
 		err = f2fs_preallocate_blocks(iocb, from);
 		if (err) {
 out_err:
@@ -4127,7 +4130,10 @@ out_err:
 			ret = err;
 			goto out;
 		}
-write:
+write:	
+		/**
+		 * 预处理完成后的下一步写流程
+		*/
 		ret = __generic_file_write_iter(iocb, from);
 		clear_inode_flag(inode, FI_NO_PREALLOC);
 
@@ -4205,6 +4211,7 @@ long f2fs_compat_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 }
 #endif
 
+//f2fs文件操作结构体，注册了f2fs文件操作的各个函数
 const struct file_operations f2fs_file_operations = {
 	.llseek		= f2fs_llseek,
 	.read_iter	= f2fs_file_read_iter,
