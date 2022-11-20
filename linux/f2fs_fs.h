@@ -243,6 +243,9 @@ struct f2fs_extent {
 #define F2FS_EXTRA_ATTR		0x20	/* file having extra attribute */
 #define F2FS_PIN_FILE		0x40	/* file should not be gced */
 
+/**
+ * f2fs_inode结构
+*/
 struct f2fs_inode {
 	__le16 i_mode;			/* file mode */
 	__u8 i_advise;			/* file hints */
@@ -289,7 +292,7 @@ struct f2fs_inode {
 			__le16 i_padding;		/* padding */
 			__le32 i_extra_end[0];	/* for attribute size calculation */
 		} __packed;
-		__le32 i_addr[DEF_ADDRS_PER_INODE];	/* Pointers to data blocks */
+		__le32 i_addr[DEF_ADDRS_PER_INODE];	/* Pointers to data blocks ，直接指向数据块的地址数组部分*/
 	};
 	__le32 i_nid[DEF_NIDS_PER_INODE];	/* direct(2), indirect(2),
 						double_indirect(1) node id */
@@ -312,14 +315,22 @@ enum {
 
 #define OFFSET_BIT_MASK		(0x07)	/* (0x01 << OFFSET_BIT_SHIFT) - 1 */
 
+/**
+ * f2fs_node结构中的node_footer用于区分node的类型
+ * 如果nid==ino，说明为inode，否则为direct/indirect node
+*/
 struct node_footer {
-	__le32 nid;		/* node id */
-	__le32 ino;		/* inode number */
-	__le32 flag;		/* include cold/fsync/dentry marks and offset */
-	__le64 cp_ver;		/* checkpoint version */
+	__le32 nid;				/* node id */
+	__le32 ino;				/* inode number */
+	__le32 flag;			/* include cold/fsync/dentry marks and offset */
+	__le64 cp_ver;			/* checkpoint version */
 	__le32 next_blkaddr;	/* next node page block address */
 } __packed;
 
+/**
+ * f2fs中inode/direct node/indirect node均使用f2fs_node结构来进行统一管理
+ * 通过union的方式使用不同的结构
+*/
 struct f2fs_node {
 	/* can be one of three types: inode, direct, and indirect types */
 	union {
@@ -341,8 +352,8 @@ struct f2fs_node {
  */
 struct f2fs_nat_entry {
 	__u8 version;		/* latest version of cached nat entry ，用于系统恢复*/
-	__le32 ino;		/* inode number */
-	__le32 block_addr;	/* block address */
+	__le32 ino;			/* inode number */
+	__le32 block_addr;	/* block address，逻辑块地址*/
 } __packed;
 
 //NAT部分由f2fs_nat_block形式组成，每个f2fs_nat_block包含455个f2fs_nat_entry
@@ -416,19 +427,23 @@ struct f2fs_sit_block {
  * from node's page's beginning to get a data block address.
  * ex) data_blkaddr = (block_t)(nodepage_start_address + ofs_in_node)
  */
-#define ENTRIES_IN_SUM		512
-#define	SUMMARY_SIZE		(7)	/* sizeof(struct summary) */
-#define	SUM_FOOTER_SIZE		(5)	/* sizeof(struct summary_footer) */
-#define SUM_ENTRY_SIZE		(SUMMARY_SIZE * ENTRIES_IN_SUM)
+#define ENTRIES_IN_SUM		512									/* 每个summary_block 对应512个块的summary*/
+#define	SUMMARY_SIZE		(7)									/* sizeof(struct summary) */
+#define	SUM_FOOTER_SIZE		(5)									/* sizeof(struct summary_footer) */
+#define SUM_ENTRY_SIZE		(SUMMARY_SIZE * ENTRIES_IN_SUM)		/* 512 * 7 */
 
-/* a summary entry for a 4KB-sized block in a segment */
+/** a summary entry for a 4KB-sized block in a segment 
+ * SSA中每个block对应着一条f2fs_summary
+ * 一条summary根据自身所在的segment和下标可以确定逻辑块地址
+ * 通过这个条目反向找到索引这个数据块的node的nid和node page内的偏移量
+*/
 struct f2fs_summary {
-	__le32 nid;		/* parent node id */
+	__le32 nid;		/* parent node id ，该逻辑块所属的nid*/
 	union {
 		__u8 reserved[3];
 		struct {
-			__u8 version;		/* node version number */
-			__le16 ofs_in_node;	/* block index in parent node */
+			__u8 version;		/* node version number,主要是用于数据恢复*/
+			__le16 ofs_in_node;	/* block index in parent node ,node page的偏移量*/
 		} __packed;
 	};
 } __packed;
@@ -437,15 +452,23 @@ struct f2fs_summary {
 #define SUM_TYPE_NODE		(1)
 #define SUM_TYPE_DATA		(0)
 
+/**	summary_footer部分用于提示这一个summary_block对应segment的类型和属性
+ * 
+*/
 struct summary_footer {
-	unsigned char entry_type;	/* SUM_TYPE_XXX */
-	__le32 check_sum;		/* summary checksum */
+	unsigned char entry_type;	/* SUM_TYPE_XXX ,type变量可以确定该block对应segment 保存node数据还是data数据*/
+	__le32 check_sum;			/* summary checksum */
 } __packed;
 
+//计算出f2fs_journal的大小
 #define SUM_JOURNAL_SIZE	(F2FS_BLKSIZE - SUM_FOOTER_SIZE -\
 				SUM_ENTRY_SIZE)
+
+//在一个f2fs_journal作为nat journal使用时可以存放的sit_journay_entry的个数,注意-2已经扣去了le16的大小
 #define NAT_JOURNAL_ENTRIES	((SUM_JOURNAL_SIZE - 2) /\
 				sizeof(struct nat_journal_entry))
+
+//在一个f2fs_journal作为nat journal使用时存放的sit_journay_entry后的余量空间,注意-2已经扣去了le16的大小
 #define NAT_JOURNAL_RESERVED	((SUM_JOURNAL_SIZE - 2) %\
 				sizeof(struct nat_journal_entry))
 #define SIT_JOURNAL_ENTRIES	((SUM_JOURNAL_SIZE - 2) /\
@@ -467,21 +490,34 @@ enum {
 	SIT_JOURNAL
 };
 
+/** nat_journal_entry
+ *  除了相关的nid外，还有对应地f2fs_nat_entry
+*/
 struct nat_journal_entry {
 	__le32 nid;
 	struct f2fs_nat_entry ne;
 } __packed;
 
+/**
+ * 每条nat journal对应着nat中的一项，因此也就与一个nid关联
+*/
 struct nat_journal {
 	struct nat_journal_entry entries[NAT_JOURNAL_ENTRIES];
 	__u8 reserved[NAT_JOURNAL_RESERVED];
 } __packed;
 
+/**
+ * sit_journal_entry
+ * 除了segno外，还有对应地f2fs_sit_entry
+*/
 struct sit_journal_entry {
 	__le32 segno;
 	struct f2fs_sit_entry se;
 } __packed;
 
+/**
+ * 每一条sit_journal_entry则与一个SIT中的一项对应
+*/
 struct sit_journal {
 	struct sit_journal_entry entries[SIT_JOURNAL_ENTRIES];
 	__u8 reserved[SIT_JOURNAL_RESERVED];
@@ -492,12 +528,20 @@ struct f2fs_extra_info {
 	__u8 reserved[EXTRA_INFO_RESERVED];
 } __packed;
 
+/**f2fs_journal结构体，f2fs中的journal的设计目的都是为了避免频繁的对SIT/NAT等区域进行更新而落盘
+ * 通过journal的方式，将多条更新先写入到journal中维护经常修改的数据，cp触发时写入到磁盘，来减少写压力。
+ * 在SSA区域和CP中的curseg区域都有Journal的使用
+ * 
+*/
 struct f2fs_journal {
+	//union成员，分别指代有多少个nat/sit journal 对象
 	union {
 		__le16 n_nats;
 		__le16 n_sits;
 	};
-	/* spare area is used by NAT or SIT journals or extra info */
+	/** spare area is used by NAT or SIT journals or extra info 
+	 * 同样地，通过union表示是nat/sit journals
+	*/
 	union {
 		struct nat_journal nat_j;
 		struct sit_journal sit_j;
@@ -505,8 +549,13 @@ struct f2fs_journal {
 	};
 } __packed;
 
-/* 4KB-sized summary block structure */
+/** 4KB-sized summary block structure 
+ * 	4KB大小的SSA summary块,SSA的磁盘块结构
+ *  每个block对应着一个segment,由于一个segment包含512个block
+ *  所以ENTRIES_IN_SUM为512，每个f2fs_summary对应一个block
+*/
 struct f2fs_summary_block {
+	//f2fs_summary数组
 	struct f2fs_summary entries[ENTRIES_IN_SUM];
 	struct f2fs_journal journal;
 	struct summary_footer footer;
