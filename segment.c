@@ -3459,19 +3459,23 @@ void f2fs_allocate_data_block(struct f2fs_sb_info *sbi, struct page *page,
 	if (F2FS_IO_ALIGNED(sbi))
 		fio->retry = false;
 
+	//似乎是把fio加入到sbi的write_io列表里
 	if (fio) {
 		struct f2fs_bio_info *io;
 
 		INIT_LIST_HEAD(&fio->list);
 		fio->in_list = true;
+		//先根据类型确定到类型数组，然后根据温度确定具体的io指针
 		io = sbi->write_io[fio->type] + fio->temp;
 		spin_lock(&io->io_lock);
+		//将fio中的IOs加入到了io暂存区中
 		list_add_tail(&fio->list, &io->io_list);
 		spin_unlock(&io->io_lock);
 	}
 
+	//释放curseg锁
 	mutex_unlock(&curseg->curseg_mutex);
-
+	//释放读信号量
 	up_read(&SM_I(sbi)->curseg_lock);
 }
 
@@ -3518,7 +3522,7 @@ reallocate:
 					fio->old_blkaddr, fio->old_blkaddr);
 
 	/* writeout dirty page into bdev */
-	//完成异步更新的第3步
+	// 完成异步更新的第3步
 	f2fs_submit_page_write(fio);
 	if (fio->retry) {
 		fio->old_blkaddr = fio->new_blkaddr;

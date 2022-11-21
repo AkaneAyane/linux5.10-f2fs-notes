@@ -1089,6 +1089,7 @@ struct f2fs_sm_info {
  *
  * f2fs monitors the number of several block types such as on-writeback,
  * dirty dentry blocks, dirty node blocks, and dirty meta blocks.
+ * f2fs监控了不同的类型的数据块类型的数量
  */
 #define WB_DATA_TYPE(p)	(__is_cp_guaranteed(p) ? F2FS_WB_CP_DATA : F2FS_WB_DATA)
 enum count_type {
@@ -1120,6 +1121,7 @@ enum count_type {
  *			with waiting the bio's completion
  * ...			Only can be used with META.
  */
+//获取bio的类型
 #define PAGE_TYPE_OF_BIO(type)	((type) > META ? META : (type))
 enum page_type {
 	DATA,
@@ -1197,8 +1199,8 @@ enum iostat_type {
 struct f2fs_io_info {
 	struct f2fs_sb_info *sbi;	/* f2fs_sb_info pointer */
 	nid_t ino;		/* inode number */
-	enum page_type type;	/* contains DATA/NODE/META/META_FLUSH */
-	enum temp_type temp;	/* contains HOT/WARM/COLD */
+	enum page_type type;	/* contains DATA/NODE/META/META_FLUSH ，page页类型*/
+	enum temp_type temp;	/* contains HOT/WARM/COLD ，page页温度*/
 	int op;			/* contains REQ_OP_ */
 	int op_flags;		/* req_flag_bits */
 	block_t new_blkaddr;	/* new block address to be written ，数据写入的新逻辑块地址*/
@@ -1206,10 +1208,10 @@ struct f2fs_io_info {
 	struct page *page;	/* page to be written */
 	struct page *encrypted_page;	/* encrypted page */
 	struct page *compressed_page;	/* compressed page */
-	struct list_head list;		/* serialize IOs */
+	struct list_head list;		/* serialize IOs ，fio的IO项*/
 	bool submitted;		/* indicate IO submission */
 	int need_lock;		/* indicate we need to lock cp_rwsem */
-	bool in_list;		/* indicate fio is in io_list */
+	bool in_list;		/* indicate fio is in io_list，判断本fio是否已经在io_list里*/
 	bool is_por;		/* indicate IO is from recovery or not */
 	bool retry;		/* need to reallocate block address */
 	int compr_blocks;	/* # of compressed block addresses */
@@ -1226,10 +1228,11 @@ struct bio_entry {
 	struct list_head list;
 };
 
+//判断bio的操作类型
 #define is_read_io(rw) ((rw) == READ)
 struct f2fs_bio_info {
 	struct f2fs_sb_info *sbi;	/* f2fs superblock */
-	struct bio *bio;		/* bios to merge */
+	struct bio *bio;		/* bios to merge ,实际的bio结构体，可能发生merge*/
 	sector_t last_block_in_bio;	/* last block number */
 	struct f2fs_io_info fio;	/* store buffered io info. */
 	struct rw_semaphore io_rwsem;	/* blocking op for bio */
@@ -1473,7 +1476,7 @@ struct f2fs_sb_info {
 	struct f2fs_sm_info *sm_info;		/* segment manager */
 
 	/* for bio operations */
-	struct f2fs_bio_info *write_io[NR_PAGE_TYPE];	/* for write bios */
+	struct f2fs_bio_info *write_io[NR_PAGE_TYPE];	/* for write bios ，用于write bio的信息结构，是f2fs用于管理和生成bio的结构变量*/
 	/* keep migration IO order for LFS mode */
 	struct rw_semaphore io_order_lock;
 	mempool_t *write_io_dummy;		/* Dummy pages */
@@ -2176,6 +2179,7 @@ static inline void dec_valid_block_count(struct f2fs_sb_info *sbi,
 	f2fs_i_blocks_write(inode, count, false, true);
 }
 
+//增加页面计数
 static inline void inc_page_count(struct f2fs_sb_info *sbi, int count_type)
 {
 	atomic_inc(&sbi->nr_pages[count_type]);

@@ -487,12 +487,14 @@ static bool f2fs_crypt_mergeable_bio(struct bio *bio, const struct inode *inode,
 	return fscrypt_mergeable_bio(bio, inode, next_idx);
 }
 
+//f2fs提交bio的操作
 static inline void __submit_bio(struct f2fs_sb_info *sbi,
 				struct bio *bio, enum page_type type)
-{
+{	
+	//如果bio为写操作
 	if (!is_read_io(bio_op(bio))) {
 		unsigned int start;
-
+		//如果为data或者node写那么直接进入submit_io阶段
 		if (type != DATA && type != NODE)
 			goto submit_io;
 
@@ -534,6 +536,7 @@ submit_io:
 		trace_f2fs_submit_read_bio(sbi->sb, type, bio);
 	else
 		trace_f2fs_submit_write_bio(sbi->sb, type, bio);
+	//内核提交bio的调用
 	submit_bio(bio);
 }
 
@@ -543,6 +546,7 @@ void f2fs_submit_bio(struct f2fs_sb_info *sbi,
 	__submit_bio(sbi, bio, type);
 }
 
+//向fio中的flag字段添加flag
 static void __attach_io_flag(struct f2fs_io_info *fio)
 {
 	struct f2fs_sb_info *sbi = fio->sbi;
@@ -571,6 +575,9 @@ static void __attach_io_flag(struct f2fs_io_info *fio)
 		fio->op_flags |= REQ_FUA;
 }
 
+/**
+ * 提交bio的操作
+*/
 static void __submit_merged_bio(struct f2fs_bio_info *io)
 {
 	struct f2fs_io_info *fio = &io->fio;
@@ -722,13 +729,15 @@ int f2fs_submit_page_bio(struct f2fs_io_info *fio)
 
 	if (fio->io_wbc && !is_read_io(fio->op))
 		wbc_account_cgroup_owner(fio->io_wbc, page, PAGE_SIZE);
-
+	
+	//设置fio flags并且设置bio属性
 	__attach_io_flag(fio);
 	bio_set_op_attrs(bio, fio->op, fio->op_flags);
 
 	inc_page_count(fio->sbi, is_read_io(fio->op) ?
 			__read_io_type(page): WB_DATA_TYPE(fio->page));
 
+	//真正提交bio
 	__submit_bio(fio->sbi, bio, fio->type);
 	return 0;
 }
@@ -938,24 +947,32 @@ alloc_new:
 
 	return 0;
 }
-
+/**
+ * 本函数完成最后的提交到磁盘的任务
+ * 通过创建bio结构，然后将page加入到bio中
+*/
 void f2fs_submit_page_write(struct f2fs_io_info *fio)
 {
 	struct f2fs_sb_info *sbi = fio->sbi;
 	enum page_type btype = PAGE_TYPE_OF_BIO(fio->type);
+	//在f2fs_allocate_data_block操作中加入到了write_io暂存
 	struct f2fs_bio_info *io = sbi->write_io[btype] + fio->temp;
 	struct page *bio_page;
 
 	f2fs_bug_on(sbi, is_read_io(fio->op));
 
+	//获取写信号量
 	down_write(&io->io_rwsem);
 next:
+	//在f2fs_allocate_data_block这一步已经设置为true了
 	if (fio->in_list) {
 		spin_lock(&io->io_lock);
+		//如果为空直接进入out
 		if (list_empty(&io->io_list)) {
 			spin_unlock(&io->io_lock);
 			goto out;
 		}
+		//否则取出第一个项
 		fio = list_first_entry(&io->io_list,
 						struct f2fs_io_info, list);
 		list_del(&fio->list);
@@ -964,6 +981,7 @@ next:
 
 	verify_fio_blkaddr(fio);
 
+	//根据是否有加密/压缩，将bio设置为对应的page
 	if (fio->encrypted_page)
 		bio_page = fio->encrypted_page;
 	else if (fio->compressed_page)
@@ -971,7 +989,7 @@ next:
 	else
 		bio_page = fio->page;
 
-	/* set submitted = true as a return value */
+	/* set submitted = true as a return value ，设置submitted*/
 	fio->submitted = true;
 
 	inc_page_count(sbi, WB_DATA_TYPE(bio_page));
@@ -983,6 +1001,7 @@ next:
 				       bio_page->index, fio)))
 		__submit_merged_bio(io);
 alloc_new:
+	//如果io中的bio是空的，那么创建一个新的bio
 	if (io->bio == NULL) {
 		if (F2FS_IO_ALIGNED(sbi) &&
 				(fio->type == DATA || fio->type == NODE) &&
@@ -996,7 +1015,10 @@ alloc_new:
 				       bio_page->index, fio, GFP_NOIO);
 		io->fio = *fio;
 	}
-
+	/**将待写入的page加入到bio 
+	 * 如果添加量小于page_size
+	 * 那么先把当前bio提交，然后重新分配bio
+	*/
 	if (bio_add_page(io->bio, bio_page, PAGE_SIZE, 0) < PAGE_SIZE) {
 		__submit_merged_bio(io);
 		goto alloc_new;
@@ -1004,18 +1026,22 @@ alloc_new:
 
 	if (fio->io_wbc)
 		wbc_account_cgroup_owner(fio->io_wbc, bio_page, PAGE_SIZE);
-
+	
+	//io中记录last_block_io_bio为本fio的新写入逻辑块地址
 	io->last_block_in_bio = fio->new_blkaddr;
 	f2fs_trace_ios(fio, 0);
 
 	trace_f2fs_submit_page_write(fio->page, fio);
 skip:
+
 	if (fio->in_list)
 		goto next;
 out:
+	//如果最后阶段sbi被shutdown或者ckpt不ready那么需要提交bio
 	if (is_sbi_flag_set(sbi, SBI_IS_SHUTDOWN) ||
 				!f2fs_is_checkpoint_ready(sbi))
 		__submit_merged_bio(io);
+	//释放信号量
 	up_write(&io->io_rwsem);
 }
 
