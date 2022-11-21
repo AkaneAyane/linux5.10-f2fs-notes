@@ -585,12 +585,12 @@ static inline void make_dentry_ptr_inline(struct inode *inode,
 #define XATTR_NODE_OFFSET	((((unsigned int)-1) << OFFSET_BIT_SHIFT) \
 				>> OFFSET_BIT_SHIFT)
 enum {
-	ALLOC_NODE,			/* allocate a new node page if needed */
-	LOOKUP_NODE,			/* look up a node without readahead */
-	LOOKUP_NODE_RA,			/*
-					 * look up a node with readahead called
-					 * by get_data_block.
-					 */
+	ALLOC_NODE,			 /* allocate a new node page if needed , 可能分配node page*/
+	LOOKUP_NODE,		 /* look up a node without readahead ， 查找一个node，并且没有readahead*/
+	LOOKUP_NODE_RA,		 /*
+					      * look up a node with readahead called
+					      * by get_data_block.
+					     */
 };
 
 #define DEFAULT_RETRY_IO_COUNT	8	/* maximum retry read IO count */
@@ -657,6 +657,9 @@ struct extent_tree {
 #define F2FS_MAP_FLAGS		(F2FS_MAP_NEW | F2FS_MAP_MAPPED |\
 				F2FS_MAP_UNWRITTEN)
 
+/**
+ * 本结构体用于描述文件逻辑数据地址到实际的逻辑块地址的映射关系
+ */
 struct f2fs_map_blocks {
 	block_t m_pblk;
 	block_t m_lblk;
@@ -665,7 +668,7 @@ struct f2fs_map_blocks {
 	pgoff_t *m_next_pgofs;		/* point next possible non-hole pgofs */
 	pgoff_t *m_next_extent;		/* point to next possible extent */
 	int m_seg_type;
-	bool m_may_create;		/* indicate it is from write path */
+	bool m_may_create;		    /* indicate it is from write path，通过此变量来判断用于读还是写*/
 };
 
 /* for flag in get_data_block */
@@ -731,7 +734,7 @@ enum {
 	FI_FREE_NID,		/* free allocated nide */
 	FI_NO_EXTENT,		/* not to use the extent cache */
 	FI_INLINE_XATTR,	/* used for inline xattr */
-	FI_INLINE_DATA,		/* used for inline data*/
+	FI_INLINE_DATA,		/* used for inline data ，判断inode是否用于了inline data*/
 	FI_INLINE_DENTRY,	/* used for inline dentry */
 	FI_APPEND_WRITE,	/* inode has appended data */
 	FI_UPDATE_WRITE,	/* inode has in-place-update data */
@@ -745,7 +748,7 @@ enum {
 	FI_INLINE_DOTS,		/* indicate inline dot dentries */
 	FI_DO_DEFRAG,		/* indicate defragment is running */
 	FI_DIRTY_FILE,		/* indicate regular/symlink has dirty pages */
-	FI_NO_PREALLOC,		/* indicate skipped preallocated blocks */
+	FI_NO_PREALLOC,		/* indicate skipped preallocated blocks，提示是否跳过预分配阶段*/
 	FI_HOT_DATA,		/* indicate file is hot */
 	FI_EXTRA_ATTR,		/* indicate file has extra attribute */
 	FI_PROJ_INHERIT,	/* indicate file inherits projectid */
@@ -948,24 +951,32 @@ struct f2fs_nm_info {
  * this structure is used as one of function parameters.
  * all the information are dedicated to a given direct node block determined
  * by the data offset in a file.
+ * 用于描述一个direct node块的数据，
+ * 注意一般的用法有：
+ * 1.根据node_page,nid,ofs_in_node等获取逻辑块地址
+ * 2.设置逻辑块地址，去修改node_page里的逻辑块地址数组
  */
 struct dnode_of_data {
-	struct inode *inode;		/* vfs inode pointer */
-	struct page *inode_page;	/* its inode page, NULL is possible */
-	struct page *node_page;		/* cached direct node page */
-	nid_t nid;			/* node id of the direct node block */
-	unsigned int ofs_in_node;	/* data offset in the node page */
+	struct inode *inode;		/* vfs inode pointer ,vfs层的inode*/
+	struct page *inode_page;	/* its inode page, NULL is possible , f2fs层的inode page*/
+	struct page *node_page;		/* cached direct node page ,缓存的node page，也就是需要访问的逻辑块所在的node_page，有可能与inode_page相同*/
+	nid_t nid;			        /* node id of the direct node block, 所需要访问的逻辑块所在的direct node 的nid，与node_page对应*/
+	unsigned int ofs_in_node;	/* data offset in the node page，所需要访问的逻辑块地址位于node_page的addr数组的第几个位置*/
 	bool inode_page_locked;		/* inode page is locked or not */
-	bool node_changed;		/* is node block changed */
-	char cur_level;			/* level of hole node page */
-	char max_level;			/* level of current page located */
-	block_t	data_blkaddr;		/* block address of the node block */
+	bool node_changed;		    /* is node block changed ,用于标记node_page是否被修改了*/
+	char cur_level;			    /* level of hole node page ,当前node_page的层次，根据直接访问或者间接访问的深度进行区分*/
+	char max_level;			    /* level of current page located */
+	block_t	data_blkaddr;		/* block address of the node block ,还不确定是node page的逻辑块地址还是数据块的逻辑块地址*/
 };
 
+/**dnode的内容初始化操作
+ * 大部分情况下只需要初始化了inode即可，
+ * nid传入0时可以代表不清楚nid
+*/
 static inline void set_new_dnode(struct dnode_of_data *dn, struct inode *inode,
 		struct page *ipage, struct page *npage, nid_t nid)
 {
-	memset(dn, 0, sizeof(*dn));
+	memset(dn, 0, sizeof(*dn));//全部初始化为0
 	dn->inode = inode;
 	dn->inode_page = ipage;
 	dn->node_page = npage;
@@ -1182,6 +1193,7 @@ enum iostat_type {
 	NR_IO_TYPE,
 };
 
+//f2fs的io信息数据结构非常重要
 struct f2fs_io_info {
 	struct f2fs_sb_info *sbi;	/* f2fs_sb_info pointer */
 	nid_t ino;		/* inode number */
@@ -1189,8 +1201,8 @@ struct f2fs_io_info {
 	enum temp_type temp;	/* contains HOT/WARM/COLD */
 	int op;			/* contains REQ_OP_ */
 	int op_flags;		/* req_flag_bits */
-	block_t new_blkaddr;	/* new block address to be written */
-	block_t old_blkaddr;	/* old block address before Cow */
+	block_t new_blkaddr;	/* new block address to be written ，数据写入的新逻辑块地址*/
+	block_t old_blkaddr;	/* old block address before Cow ，数据写入的旧逻辑块地址*/
 	struct page *page;	/* page to be written */
 	struct page *encrypted_page;	/* encrypted page */
 	struct page *compressed_page;	/* compressed page */
@@ -1280,7 +1292,7 @@ enum {
 	SBI_NEED_CP,				/* need to checkpoint */
 	SBI_IS_SHUTDOWN,			/* shutdown by ioctl */
 	SBI_IS_RECOVERED,			/* recovered orphan/data */
-	SBI_CP_DISABLED,			/* CP was disabled last mount */
+	SBI_CP_DISABLED,			/* CP was disabled last mount，cp被关闭了*/
 	SBI_CP_DISABLED_QUICK,			/* CP was disabled quickly */
 	SBI_QUOTA_NEED_FLUSH,			/* need to flush quota info in CP */
 	SBI_QUOTA_SKIP_FLUSH,			/* skip flushing quota in current CP */
@@ -1472,7 +1484,7 @@ struct f2fs_sb_info {
 	spinlock_t cp_lock;			/* for flag in ckpt */
 	struct inode *meta_inode;		/* cache meta blocks */
 	struct mutex cp_mutex;			/* checkpoint procedure lock */
-	struct rw_semaphore cp_rwsem;		/* blocking FS operations */
+	struct rw_semaphore cp_rwsem;		/* blocking FS operations，用户保护FS操作的信号量锁*/
 	struct rw_semaphore node_write;		/* locking node writes */
 	struct rw_semaphore node_change;	/* locking node change */
 	wait_queue_head_t cp_wait;
@@ -1703,6 +1715,7 @@ static inline bool f2fs_is_multi_device(struct f2fs_sb_info *sbi)
 (((u64)part_stat_read((s)->sb->s_bdev->bd_part, sectors[STAT_WRITE]) -   \
 		(s)->sectors_written_start) >> 1)
 
+//更新文件的修改信息
 static inline void f2fs_update_time(struct f2fs_sb_info *sbi, int type)
 {
 	unsigned long now = jiffies;
@@ -1783,21 +1796,25 @@ static inline struct f2fs_inode_info *F2FS_I(struct inode *inode)
 	return container_of(inode, struct f2fs_inode_info, vfs_inode);
 }
 
+//通过inode中的super_block结构返回f2fs_内存管理结构
 static inline struct f2fs_sb_info *F2FS_SB(struct super_block *sb)
 {
 	return sb->s_fs_info;
 }
 
+//根据inode结构返回f2fs_sb_info结构
 static inline struct f2fs_sb_info *F2FS_I_SB(struct inode *inode)
 {
 	return F2FS_SB(inode->i_sb);
 }
 
+//根据缓存空间映射到inode，从而获取f2fs_sb_info结构
 static inline struct f2fs_sb_info *F2FS_M_SB(struct address_space *mapping)
 {
 	return F2FS_I_SB(mapping->host);
 }
 
+//根据page映射到mapping空间从而获取到f2fs_sb_info结构
 static inline struct f2fs_sb_info *F2FS_P_SB(struct page *page)
 {
 	return F2FS_M_SB(page_file_mapping(page));
@@ -1808,6 +1825,7 @@ static inline struct f2fs_super_block *F2FS_RAW_SUPER(struct f2fs_sb_info *sbi)
 	return (struct f2fs_super_block *)(sbi->raw_super);
 }
 
+//从sbi中获取f2fs_checkpoint结构
 static inline struct f2fs_checkpoint *F2FS_CKPT(struct f2fs_sb_info *sbi)
 {
 	return (struct f2fs_checkpoint *)(sbi->ckpt);
@@ -1843,6 +1861,7 @@ static inline struct free_segmap_info *FREE_I(struct f2fs_sb_info *sbi)
 	return (struct free_segmap_info *)(SM_I(sbi)->free_info);
 }
 
+//获取sbi中的脏段dirty_info
 static inline struct dirty_seglist_info *DIRTY_I(struct f2fs_sb_info *sbi)
 {
 	return (struct dirty_seglist_info *)(SM_I(sbi)->dirty_info);
@@ -1971,6 +1990,7 @@ static inline bool enabled_nat_bits(struct f2fs_sb_info *sbi,
 	return (cpc) ? (cpc->reason & CP_UMOUNT) && set : set;
 }
 
+//获取sbi的cp_rwsem信号量
 static inline void f2fs_lock_op(struct f2fs_sb_info *sbi)
 {
 	down_read(&sbi->cp_rwsem);
@@ -2489,6 +2509,7 @@ static inline void f2fs_put_page(struct page *page, int unlock)
 	put_page(page);
 }
 
+//释放dnode
 static inline void f2fs_put_dnode(struct dnode_of_data *dn)
 {
 	if (dn->node_page)
@@ -2554,6 +2575,7 @@ static inline void f2fs_radix_tree_insert(struct radix_tree_root *root,
 		cond_resched();
 }
 
+//验证node的nid和ino是否相同来判断是否为inode
 #define RAW_IS_INODE(p)	((p)->footer.nid == (p)->footer.ino)
 
 static inline bool IS_INODE(struct page *page)
@@ -2569,12 +2591,18 @@ static inline int offset_in_addr(struct f2fs_inode *i)
 			(le16_to_cpu(i->i_extra_isize) / sizeof(__le32)) : 0;
 }
 
+//获取direct node块内的逻辑块地址数组
 static inline __le32 *blkaddr_in_node(struct f2fs_node *node)
-{
+{	
+	//根据不同类型作不同的处理
 	return RAW_IS_INODE(node) ? node->i.i_addr : node->dn.addr;
 }
 
 static inline int f2fs_has_extra_attr(struct inode *inode);
+
+/**从node获取逻辑块地址的实际逻辑 
+ * @param offset为node内的相对偏移量
+*/
 static inline block_t data_blkaddr(struct inode *inode,
 			struct page *node_page, unsigned int offset)
 {
@@ -2585,6 +2613,7 @@ static inline block_t data_blkaddr(struct inode *inode,
 
 	raw_node = F2FS_NODE(node_page);
 
+	//如果是node_page为inode
 	if (is_inode) {
 		if (!inode)
 			/* from GC path only */
@@ -2592,11 +2621,12 @@ static inline block_t data_blkaddr(struct inode *inode,
 		else if (f2fs_has_extra_attr(inode))
 			base = get_extra_isize(inode);
 	}
-
+	//构建node内的逻辑块地址数组
 	addr_array = blkaddr_in_node(raw_node);
 	return le32_to_cpu(addr_array[base + offset]);
 }
 
+//根据dnode_of_data描述的文件逻辑地址获取到的全局逻辑块地址
 static inline block_t f2fs_data_blkaddr(struct dnode_of_data *dn)
 {
 	return data_blkaddr(dn->inode, dn->node_page, dn->ofs_in_node);
@@ -2632,6 +2662,7 @@ static inline void f2fs_clear_bit(unsigned int nr, char *addr)
 	*addr &= ~mask;
 }
 
+//设置nr位为1，并且返回旧位值
 static inline int f2fs_test_and_set_bit(unsigned int nr, char *addr)
 {
 	int mask;
@@ -2644,6 +2675,7 @@ static inline int f2fs_test_and_set_bit(unsigned int nr, char *addr)
 	return ret;
 }
 
+//设置nr位为0，并且返回旧位值
 static inline int f2fs_test_and_clear_bit(unsigned int nr, char *addr)
 {
 	int mask;
@@ -2720,12 +2752,14 @@ static inline void __mark_inode_dirty_flag(struct inode *inode,
 	}
 }
 
+//设置inode的flags字段，并且将inode标记为脏
 static inline void set_inode_flag(struct inode *inode, int flag)
 {
 	set_bit(flag, F2FS_I(inode)->flags);
 	__mark_inode_dirty_flag(inode, flag, true);
 }
 
+//通过inode的flags，判定特殊位是否被置位
 static inline int is_inode_flag_set(struct inode *inode, int flag)
 {
 	return test_bit(flag, F2FS_I(inode)->flags);
@@ -2780,6 +2814,7 @@ static inline void f2fs_i_blocks_write(struct inode *inode,
 		set_inode_flag(inode, FI_AUTO_RECOVER);
 }
 
+//更新文件的大小信息
 static inline void f2fs_i_size_write(struct inode *inode, loff_t i_size)
 {
 	bool clean = !is_inode_flag_set(inode, FI_DIRTY_INODE);
@@ -2875,6 +2910,7 @@ static inline int f2fs_compressed_file(struct inode *inode)
 		is_inode_flag_set(inode, FI_COMPRESSED_FILE);
 }
 
+//计算inode的地址数
 static inline unsigned int addrs_per_inode(struct inode *inode)
 {
 	unsigned int addrs = CUR_ADDRS_PER_INODE(inode) -
@@ -2885,6 +2921,7 @@ static inline unsigned int addrs_per_inode(struct inode *inode)
 	return ALIGN_DOWN(addrs, F2FS_I(inode)->i_cluster_size);
 }
 
+//计算非inode的其他node内的地址数量
 static inline unsigned int addrs_per_block(struct inode *inode)
 {
 	if (!f2fs_compressed_file(inode))
@@ -2907,6 +2944,7 @@ static inline int inline_xattr_size(struct inode *inode)
 	return 0;
 }
 
+//判断inode中是否存在内联数据
 static inline int f2fs_has_inline_data(struct inode *inode)
 {
 	return is_inode_flag_set(inode, FI_INLINE_DATA);
@@ -3033,6 +3071,7 @@ static inline bool f2fs_readonly(struct super_block *sb)
 	return sb_rdonly(sb);
 }
 
+//f2fs通过检查flag的cp_error_flag来判断f2fs_sb_info是否有ckpt错误
 static inline bool f2fs_cp_error(struct f2fs_sb_info *sbi)
 {
 	return is_set_ckpt_flags(sbi, CP_ERROR_FLAG);
@@ -3183,6 +3222,7 @@ static inline void verify_blkaddr(struct f2fs_sb_info *sbi,
 	}
 }
 
+//判断是否是一个合理的写入地址
 static inline bool __is_valid_data_blkaddr(block_t blkaddr)
 {
 	if (blkaddr == NEW_ADDR || blkaddr == NULL_ADDR ||
@@ -3932,6 +3972,7 @@ static inline void f2fs_set_encrypted_inode(struct inode *inode)
 /*
  * Returns true if the reads of the inode's data need to undergo some
  * postprocessing step, like decryption or authenticity verification.
+ * 判断阅读inode的数据是否需要进行一些读后处理，包括加密、认证、压缩等
  */
 static inline bool f2fs_post_read_required(struct inode *inode)
 {
@@ -4105,6 +4146,7 @@ static inline bool f2fs_hw_is_readonly(struct f2fs_sb_info *sbi)
 	return false;
 }
 
+//获取f2fs的文件系统模式，判断是否是LFS模式
 static inline bool f2fs_lfs_mode(struct f2fs_sb_info *sbi)
 {
 	return F2FS_OPTION(sbi).fs_mode == FS_MODE_LFS;
@@ -4139,6 +4181,7 @@ static inline void f2fs_i_compr_blocks_update(struct inode *inode,
 	f2fs_mark_inode_dirty_sync(inode, true);
 }
 
+//判断是否为非对齐块IO
 static inline int block_unaligned_IO(struct inode *inode,
 				struct kiocb *iocb, struct iov_iter *iter)
 {
@@ -4160,22 +4203,29 @@ static inline int allow_outplace_dio(struct inode *inode,
 				!block_unaligned_IO(inode, iocb, iter));
 }
 
+//是否必须进行强制buffed Io
 static inline bool f2fs_force_buffered_io(struct inode *inode,
 				struct kiocb *iocb, struct iov_iter *iter)
 {
 	struct f2fs_sb_info *sbi = F2FS_I_SB(inode);
+	//判断iter的读写模式
 	int rw = iov_iter_rw(iter);
-
+	
+	//判断是否需要读后处理
 	if (f2fs_post_read_required(inode))
 		return true;
+	//判断f2fs是否在多设备商挂载
 	if (f2fs_is_multi_device(sbi))
 		return true;
 	/*
 	 * for blkzoned device, fallback direct IO to buffered IO, so
 	 * all IOs can be serialized by log-structured write.
+	 * 判断是否是zone设备
 	 */
 	if (f2fs_sb_has_blkzoned(sbi))
 		return true;
+
+	//对于LFS 写
 	if (f2fs_lfs_mode(sbi) && (rw == WRITE)) {
 		if (block_unaligned_IO(inode, iocb, iter))
 			return true;

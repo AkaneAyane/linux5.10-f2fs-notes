@@ -664,6 +664,16 @@ pgoff_t f2fs_get_next_page_offset(struct dnode_of_data *dn, pgoff_t pgofs)
 /*
  * The maximum depth is four.
  * Offset[0] will have raw inode offset.
+ * get_node_path的返回值代表着的是寻址的深度，分别为0-3
+ * 0代表可以直接在f2fs_inode找到数据块地址
+ * 1代表可以在f2fs_inode->i_nid[0..1]对应地direct_node找到数据逻辑块地址
+ * 2代表可以在f2fs_inode->i_nid[2..3]对应地indirect_node中的nid对应地direct_node找到数据逻辑块地址
+ * 3代表可以再f2fs_inode->i_nid[4]对应地indirect_node的nid对应地indirect_node的nid对应地direct_node才能找到地址
+ * 
+ * @param inode 所属inode
+ * @param block 文件内索引号
+ * @param offset 存放block在node内的偏移量的数组
+ * @param noffset 存放block所在的node属于这个文件的第几个node
  */
 static int get_node_path(struct inode *inode, long block,
 				int offset[4], unsigned int noffset[4])
@@ -743,6 +753,8 @@ got:
  * Caller should call f2fs_put_dnode(dn).
  * Also, it should grab and release a rwsem by calling f2fs_lock_op() and
  * f2fs_unlock_op() only if mode is set with ALLOC_NODE.
+ * F2FS中文件内逻辑地址到全局逻辑块地址的寻址操作，通过本函数实现
+ * 使用之前需要通过set_new_dnode来对参数中的dn进行初始化
  */
 int f2fs_get_dnode_of_data(struct dnode_of_data *dn, pgoff_t index, int mode)
 {
@@ -755,20 +767,26 @@ int f2fs_get_dnode_of_data(struct dnode_of_data *dn, pgoff_t index, int mode)
 	int level, i = 0;
 	int err = 0;
 
+	//通过get_node_path获取index所处的位置
 	level = get_node_path(dn->inode, index, offset, noffset);
 	if (level < 0)
 		return level;
 
+	//level 0 存放inode信息
 	nids[0] = dn->inode->i_ino;
 	npage[0] = dn->inode_page;
 
 	if (!npage[0]) {
+		//获取inode的node page
 		npage[0] = f2fs_get_node_page(sbi, nids[0]);
 		if (IS_ERR(npage[0]))
 			return PTR_ERR(npage[0]);
 	}
 
-	/* if inline_data is set, should not report any block indices */
+	/** if inline_data is set, should not report any block indices 
+	 *  如果inode为inline data，那么不需要再继续进行了，直接释放了
+	 *  因为之前已经处理过内联的情况
+	*/
 	if (f2fs_has_inline_data(dn->inode) && index) {
 		err = -ENOENT;
 		f2fs_put_page(npage[0], 1);
@@ -776,30 +794,33 @@ int f2fs_get_dnode_of_data(struct dnode_of_data *dn, pgoff_t index, int mode)
 	}
 
 	parent = npage[0];
+	//计算level 1的node id,即f2fs_inode->i_nid
 	if (level != 0)
 		nids[1] = get_nid(parent, offset[0], true);
 	dn->inode_page = npage[0];
 	dn->inode_page_locked = true;
 
-	/* get indirect or direct nodes */
+	/** get indirect or direct nodes 
+	 *  从1一直遍历到level
+	*/
 	for (i = 1; i <= level; i++) {
 		bool done = false;
-
+		//创建模式，写入文件时需要先创建node page
 		if (!nids[i] && mode == ALLOC_NODE) {
-			/* alloc new node */
+			/* 分配新的node id */
 			if (!f2fs_alloc_nid(sbi, &(nids[i]))) {
 				err = -ENOSPC;
 				goto release_pages;
 			}
 
-			dn->nid = nids[i];
+			dn->nid = nids[i];	
 			npage[i] = f2fs_new_node_page(dn, noffset[i]);
 			if (IS_ERR(npage[i])) {
 				f2fs_alloc_nid_failed(sbi, nids[i]);
 				err = PTR_ERR(npage[i]);
 				goto release_pages;
 			}
-
+			//根据i层次类型不同进行赋值
 			set_nid(parent, offset[i - 1], nids[i], i == 1);
 			f2fs_alloc_nid_done(sbi, nids[i]);
 			done = true;
@@ -817,7 +838,8 @@ int f2fs_get_dnode_of_data(struct dnode_of_data *dn, pgoff_t index, int mode)
 		} else {
 			f2fs_put_page(parent, 1);
 		}
-
+		
+		//如果没有通过创建或者预读的方式完成，那么在这里读取
 		if (!done) {
 			npage[i] = f2fs_get_node_page(sbi, nids[i]);
 			if (IS_ERR(npage[i])) {
@@ -827,14 +849,17 @@ int f2fs_get_dnode_of_data(struct dnode_of_data *dn, pgoff_t index, int mode)
 			}
 		}
 		if (i < level) {
+			//迭代继续读取
 			parent = npage[i];
 			nids[i + 1] = get_nid(parent, offset[i], false);
 		}
 	}
+	//结果完成之后dn里最终存放着目标逻辑块地址了
 	dn->nid = nids[level];
 	dn->ofs_in_node = offset[level];
 	dn->node_page = npage[level];
-	dn->data_blkaddr = f2fs_data_blkaddr(dn);
+	//根据文件逻辑地址获取到的全局逻辑块地址
+	dn->data_blkaddr = f2fs_data_blkaddr(dn);	
 	return 0;
 
 release_pages:
@@ -1240,6 +1265,7 @@ struct page *f2fs_new_inode_page(struct inode *inode)
 	return f2fs_new_node_page(&dn, 0);
 }
 
+//f2fs创建新的node page 
 struct page *f2fs_new_node_page(struct dnode_of_data *dn, unsigned int ofs)
 {
 	struct f2fs_sb_info *sbi = F2FS_I_SB(dn->inode);
@@ -1365,6 +1391,7 @@ void f2fs_ra_node_page(struct f2fs_sb_info *sbi, nid_t nid)
 	f2fs_put_page(apage, err ? 1 : 0);
 }
 
+//根据nid获取node page的实际逻辑操作
 static struct page *__get_node_page(struct f2fs_sb_info *sbi, pgoff_t nid,
 					struct page *parent, int start)
 {
@@ -1423,6 +1450,7 @@ out_err:
 	return page;
 }
 
+//根据nid获取node page
 struct page *f2fs_get_node_page(struct f2fs_sb_info *sbi, pgoff_t nid)
 {
 	return __get_node_page(sbi, nid, NULL, 0);
@@ -2536,6 +2564,7 @@ int f2fs_build_free_nids(struct f2fs_sb_info *sbi, bool sync, bool mount)
  * If this function returns success, caller can obtain a new nid
  * from second parameter of this function.
  * The returned nid could be used ino as well as nid when inode is created.
+ * 分配新的nid
  */
 bool f2fs_alloc_nid(struct f2fs_sb_info *sbi, nid_t *nid)
 {
@@ -2577,8 +2606,9 @@ retry:
 	return false;
 }
 
-/*
+/**
  * f2fs_alloc_nid() should be called prior to this function.
+ * 在调用完f2fs_alloc_nid()之后调用本函数
  */
 void f2fs_alloc_nid_done(struct f2fs_sb_info *sbi, nid_t nid)
 {

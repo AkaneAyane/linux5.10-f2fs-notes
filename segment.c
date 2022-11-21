@@ -486,6 +486,7 @@ int f2fs_commit_inmem_pages(struct inode *inode)
 /*
  * This function balances dirty node and dentry pages.
  * In addition, it controls garbage collection.
+ * f2fs_balance_fs是为了平衡脏node以及GC管理
  */
 void f2fs_balance_fs(struct f2fs_sb_info *sbi, bool need)
 {
@@ -511,6 +512,9 @@ void f2fs_balance_fs(struct f2fs_sb_info *sbi, bool need)
 	}
 }
 
+/**
+ * f2fs_balance_fs_bg 后台管理
+*/
 void f2fs_balance_fs_bg(struct f2fs_sb_info *sbi, bool from_bg)
 {
 	if (unlikely(is_sbi_flag_set(sbi, SBI_POR_DOING)))
@@ -777,13 +781,14 @@ int f2fs_flush_device_cache(struct f2fs_sb_info *sbi)
 	return ret;
 }
 
+//locate_dirty_segment的实际操作函数
 //设置不同级别脏段
 static void __locate_dirty_segment(struct f2fs_sb_info *sbi, unsigned int segno,
 		enum dirty_type dirty_type)
 {
 	struct dirty_seglist_info *dirty_i = DIRTY_I(sbi);
 
-	/* need not be added，当前段不需要标记为脏*/
+	/* need not be added，current段不需要标记为脏*/
 	if (IS_CURSEG(sbi, segno))
 		return;
 
@@ -792,9 +797,11 @@ static void __locate_dirty_segment(struct f2fs_sb_info *sbi, unsigned int segno,
 		dirty_i->nr_dirty[dirty_type]++;
 
 	/*如果为DIRTY级别，还需要设置sec部分*/
+	//根据段的类型 映射到脏类型,段类型也是由磁盘内结构获取
 	if (dirty_type == DIRTY) {
 		struct seg_entry *sentry = get_seg_entry(sbi, segno);
 		//根据段的类型 映射到脏类型,段类型也是由磁盘内结构获取
+		
 		enum dirty_type t = sentry->type;
 
 		if (unlikely(t >= DIRTY)) {
@@ -819,6 +826,9 @@ static void __locate_dirty_segment(struct f2fs_sb_info *sbi, unsigned int segno,
 	}
 }
 
+/**
+ * 从dirty_info中移除某个段
+*/
 static void __remove_dirty_segment(struct f2fs_sb_info *sbi, unsigned int segno,
 		enum dirty_type dirty_type)
 {
@@ -827,14 +837,19 @@ static void __remove_dirty_segment(struct f2fs_sb_info *sbi, unsigned int segno,
 
 	if (test_and_clear_bit(segno, dirty_i->dirty_segmap[dirty_type]))
 		dirty_i->nr_dirty[dirty_type]--;
-
+	
+	/*如果为DIRTY级别，还需要设置sec部分*/
+	//根据段的类型 映射到脏类型,段类型也是由磁盘内结构获取
 	if (dirty_type == DIRTY) {
 		struct seg_entry *sentry = get_seg_entry(sbi, segno);
+		//根据段的类型 映射到脏类型,段类型也是由磁盘内结构获取
 		enum dirty_type t = sentry->type;
 
+		//对于细粒度的脏类型也需要进行修改
 		if (test_and_clear_bit(segno, dirty_i->dirty_segmap[t]))
 			dirty_i->nr_dirty[t]--;
 
+		//对于section，如果section内部valid_blocks为0，victim_secmap需要进行设置
 		valid_blocks = get_valid_blocks(sbi, segno, true);
 		if (valid_blocks == 0) {
 			clear_bit(GET_SEC_FROM_SEG(sbi, segno),
@@ -845,13 +860,13 @@ static void __remove_dirty_segment(struct f2fs_sb_info *sbi, unsigned int segno,
 		}
 		if (__is_large_section(sbi)) {
 			unsigned int secno = GET_SEC_FROM_SEG(sbi, segno);
-
+			//对于section内valid_blocks为0或者valid_blocks使用完时
 			if (!valid_blocks ||
 					valid_blocks == BLKS_PER_SEC(sbi)) {
 				clear_bit(secno, dirty_i->dirty_secmap);
 				return;
 			}
-
+			//如果不是当前section
 			if (!IS_CURSEC(sbi, secno))
 				set_bit(secno, dirty_i->dirty_secmap);
 		}
@@ -861,7 +876,7 @@ static void __remove_dirty_segment(struct f2fs_sb_info *sbi, unsigned int segno,
 /*
  * Should not occur error such as -ENOMEM.
  * Adding dirty entry into seglist is not critical operation.
- * If a given segment is one of current working segments, it won't be added.
+ * 将段加入dirty_info的方式将段设置为脏，对于current段不会加入
  */
 static void locate_dirty_segment(struct f2fs_sb_info *sbi, unsigned int segno)
 {
@@ -869,15 +884,26 @@ static void locate_dirty_segment(struct f2fs_sb_info *sbi, unsigned int segno)
 	unsigned short valid_blocks, ckpt_valid_blocks;
 	unsigned int usable_blocks;
 
+	//对于当前正在使用的活跃段和空段直接返回
 	if (segno == NULL_SEGNO || IS_CURSEG(sbi, segno))
 		return;
 
 	usable_blocks = f2fs_usable_blks_in_seg(sbi, segno);
+	
+	//获取seglist_lock锁
 	mutex_lock(&dirty_i->seglist_lock);
 
+	//获取valid块数量
 	valid_blocks = get_valid_blocks(sbi, segno, false);
+	//获取检查点valid块数量
 	ckpt_valid_blocks = get_ckpt_valid_blocks(sbi, segno);
 
+	/**以下三种情况
+	 * 1.valid_blocks为0
+	 * 2.cp关闭
+	 * 3.检查点valid_blocks数量达到了usable_blocks
+	 * 设置PRE级别，移除DIRTY级别
+	*/
 	if (valid_blocks == 0 && (!is_sbi_flag_set(sbi, SBI_CP_DISABLED) ||
 		ckpt_valid_blocks == usable_blocks)) {
 		__locate_dirty_segment(sbi, segno, PRE);
@@ -2141,6 +2167,7 @@ static void destroy_discard_cmd_control(struct f2fs_sb_info *sbi)
 	SM_I(sbi)->dcc_info = NULL;
 }
 
+//设置某一个段的seg_entry为脏，修改sit_i中的脏段bitmap
 static bool __mark_sit_entry_dirty(struct f2fs_sb_info *sbi, unsigned int segno)
 {
 	struct sit_info *sit_i = SIT_I(sbi);
@@ -2195,6 +2222,9 @@ static void update_segment_mtime(struct f2fs_sb_info *sbi, block_t blkaddr,
 		SIT_I(sbi)->max_mtime = ctime;
 }
 
+/**根据逻辑块地址设置SIT相应的位置
+ * @param del delta设置变化量
+*/
 static void update_sit_entry(struct f2fs_sb_info *sbi, block_t blkaddr, int del)
 {
 	struct seg_entry *se;
@@ -2204,20 +2234,27 @@ static void update_sit_entry(struct f2fs_sb_info *sbi, block_t blkaddr, int del)
 #ifdef CONFIG_F2FS_CHECK_FS
 	bool mir_exist;
 #endif
-
+	//确定所在段
 	segno = GET_SEGNO(sbi, blkaddr);
 
+	//根据段号获得seg_entry
 	se = get_seg_entry(sbi, segno);
+
+	//新的vblocks为旧valid_blocks+del
 	new_vblocks = se->valid_blocks + del;
 	offset = GET_BLKOFF_FROM_SEG0(sbi, blkaddr);
 
 	f2fs_bug_on(sbi, (new_vblocks < 0 ||
 			(new_vblocks > f2fs_usable_blks_in_seg(sbi, segno))));
-
+	
+	//设置valid_blocks
 	se->valid_blocks = new_vblocks;
 
-	/* Update valid block bitmap */
+	/** Update valid block bitmap 
+	 * 更新sit部分
+	*/
 	if (del > 0) {
+		//设置对应bit，并且检查旧值
 		exist = f2fs_test_and_set_bit(offset, se->cur_valid_map);
 #ifdef CONFIG_F2FS_CHECK_FS
 		mir_exist = f2fs_test_and_set_bit(offset,
@@ -2227,7 +2264,8 @@ static void update_sit_entry(struct f2fs_sb_info *sbi, block_t blkaddr, int del)
 				 blkaddr, exist);
 			f2fs_bug_on(sbi, 1);
 		}
-#endif
+#endif	
+		//如果位旧值已经为1，那么报错并做修正
 		if (unlikely(exist)) {
 			f2fs_err(sbi, "Bitmap was wrongly set, blk:%u",
 				 blkaddr);
@@ -2235,7 +2273,7 @@ static void update_sit_entry(struct f2fs_sb_info *sbi, block_t blkaddr, int del)
 			se->valid_blocks--;
 			del = 0;
 		}
-
+		//设置discard map
 		if (!f2fs_test_and_set_bit(offset, se->discard_map))
 			sbi->discard_blks--;
 
@@ -2247,7 +2285,9 @@ static void update_sit_entry(struct f2fs_sb_info *sbi, block_t blkaddr, int del)
 			if (!f2fs_test_and_set_bit(offset, se->ckpt_valid_map))
 				se->ckpt_valid_blocks++;
 		}
-	} else {
+	}
+	//与if分支相反 
+	else {
 		exist = f2fs_test_and_clear_bit(offset, se->cur_valid_map);
 #ifdef CONFIG_F2FS_CHECK_FS
 		mir_exist = f2fs_test_and_clear_bit(offset,
@@ -2257,14 +2297,17 @@ static void update_sit_entry(struct f2fs_sb_info *sbi, block_t blkaddr, int del)
 				 blkaddr, exist);
 			f2fs_bug_on(sbi, 1);
 		}
-#endif
+#endif	
+		//如果位旧值已经为0，那么报错并做修正
 		if (unlikely(!exist)) {
 			f2fs_err(sbi, "Bitmap was wrongly cleared, blk:%u",
 				 blkaddr);
 			f2fs_bug_on(sbi, 1);
 			se->valid_blocks++;
 			del = 0;
-		} else if (unlikely(is_sbi_flag_set(sbi, SBI_CP_DISABLED))) {
+		}
+		//如果关闭了cp 
+		else if (unlikely(is_sbi_flag_set(sbi, SBI_CP_DISABLED))) {
 			/*
 			 * If checkpoints are off, we must not reuse data that
 			 * was used in the previous checkpoint. If it was used
@@ -2277,18 +2320,24 @@ static void update_sit_entry(struct f2fs_sb_info *sbi, block_t blkaddr, int del)
 				spin_unlock(&sbi->stat_lock);
 			}
 		}
-
+		
+		//设置discard map，可以发送discard命令
 		if (f2fs_test_and_clear_bit(offset, se->discard_map))
 			sbi->discard_blks++;
 	}
+	//如果上次ckpt时，该块也处于未使用状态，还需要设置ckpt_valid_blocks
 	if (!f2fs_test_bit(offset, se->ckpt_valid_map))
 		se->ckpt_valid_blocks += del;
 
+	//将所在段的sit_entry设置为脏
 	__mark_sit_entry_dirty(sbi, segno);
 
-	/* update total number of valid blocks to be written in ckpt area */
+	/** update total number of valid blocks to be written in ckpt area 
+	 * 记录写入cpkt区域的总valid 块的数量
+	*/
 	SIT_I(sbi)->written_valid_blocks += del;
-
+	
+	//对于大section的情况，还需要对应地更新section内的vblocks
 	if (__is_large_section(sbi))
 		get_sec_entry(sbi, segno)->valid_blocks += del;
 }
@@ -2340,15 +2389,18 @@ bool f2fs_is_checkpointed_data(struct f2fs_sb_info *sbi, block_t blkaddr)
 	return is_cp;
 }
 
-/*
+/**
  * This function should be resided under the curseg_mutex lock
+ * 向一个curseg中添加一条summary entry
  */
 static void __add_sum_entry(struct f2fs_sb_info *sbi, int type,
 					struct f2fs_summary *sum)
 {
 	struct curseg_info *curseg = CURSEG_I(sbi, type);
 	void *addr = curseg->sum_blk;
+	//根据段内偏移量计算位置
 	addr += curseg->next_blkoff * sizeof(struct f2fs_summary);
+	//数据拷贝
 	memcpy(addr, sum, sizeof(struct f2fs_summary));
 }
 
@@ -2641,6 +2693,7 @@ static void __next_free_blkoff(struct f2fs_sb_info *sbi,
  * If a segment is written by LFS manner, next block offset is just obtained
  * by increasing the current block offset. However, if a segment is written by
  * SSR manner, next block offset obtained by calling __next_free_blkoff
+ * 更新当前段下一个可用的逻辑块，一般只需要+1
  */
 static void __refresh_next_blkoff(struct f2fs_sb_info *sbi,
 				struct curseg_info *seg)
@@ -3302,20 +3355,29 @@ static int __get_segment_type(struct f2fs_io_info *fio)
 	return type;
 }
 
+/**
+ * 1、分配新的逻辑块地址
+ * 2、将旧的逻辑块地址无效掉，等待GC回收
+*/
 void f2fs_allocate_data_block(struct f2fs_sb_info *sbi, struct page *page,
 		block_t old_blkaddr, block_t *new_blkaddr,
 		struct f2fs_summary *sum, int type,
 		struct f2fs_io_info *fio)
 {
 	struct sit_info *sit_i = SIT_I(sbi);
+	//根据type类型获取活跃段
 	struct curseg_info *curseg = CURSEG_I(sbi, type);
 	unsigned long long old_mtime;
 	bool from_gc = (type == CURSEG_ALL_DATA_ATGC);
 	struct seg_entry *se = NULL;
-
+	
+	//获取curseg数组读信号量
 	down_read(&SM_I(sbi)->curseg_lock);
 
+	//获取当前curseg互斥锁
 	mutex_lock(&curseg->curseg_mutex);
+	
+	//获取sentry写信号量
 	down_write(&sit_i->sentry_lock);
 
 	if (from_gc) {
@@ -3324,6 +3386,8 @@ void f2fs_allocate_data_block(struct f2fs_sb_info *sbi, struct page *page,
 		sanity_check_seg_type(sbi, se->type);
 		f2fs_bug_on(sbi, IS_NODESEG(se->type));
 	}
+	
+	//获取current段下一个可用逻辑地址
 	*new_blkaddr = NEXT_FREE_BLKADDR(sbi, curseg);
 
 	f2fs_bug_on(sbi, curseg->next_blkoff >= sbi->blocks_per_seg);
@@ -3334,11 +3398,15 @@ void f2fs_allocate_data_block(struct f2fs_sb_info *sbi, struct page *page,
 	 * __add_sum_entry should be resided under the curseg_mutex
 	 * because, this function updates a summary entry in the
 	 * current summary block.
+	 * 上文获取curseg互斥锁的作用之一是添加summary entry到curseg中
+	 * sum在f2fs_outplace_write_data中已经设置过了
 	 */
 	__add_sum_entry(sbi, type, sum);
 
+	//更新当前端下一个可用的逻辑块
 	__refresh_next_blkoff(sbi, curseg);
 
+	//猜测更新当前段使用块数，定义处为空
 	stat_inc_block_count(sbi, curseg);
 
 	if (from_gc) {
@@ -3352,8 +3420,12 @@ void f2fs_allocate_data_block(struct f2fs_sb_info *sbi, struct page *page,
 	/*
 	 * SIT information should be updated before segment allocation,
 	 * since SSR needs latest valid block information.
+	 * 更新SIT部分，根据new_blkaddr找到所属的段，将对应位设置为valid（1)，表示已经被使用
+	 * 并且将sit_entry设置为脏
 	 */
 	update_sit_entry(sbi, *new_blkaddr, 1);
+	
+	//设置旧block所在的段的sit_entry,对应位置设置为invalid(0)，并且修改各项变量
 	if (GET_SEGNO(sbi, old_blkaddr) != NULL_SEGNO)
 		update_sit_entry(sbi, old_blkaddr, -1);
 
@@ -3368,15 +3440,19 @@ void f2fs_allocate_data_block(struct f2fs_sb_info *sbi, struct page *page,
 	 * segment dirty status should be updated after segment allocation,
 	 * so we just need to update status only one time after previous
 	 * segment being closed.
+	 * 段分配之后，需要将段设置为脏，等待cp时写回磁盘
 	 */
 	locate_dirty_segment(sbi, GET_SEGNO(sbi, old_blkaddr));
 	locate_dirty_segment(sbi, GET_SEGNO(sbi, *new_blkaddr));
-
+	
+	//释放写信号量
 	up_write(&sit_i->sentry_lock);
 
+	//如果是node类型页
 	if (page && IS_NODESEG(type)) {
+		//填充node中的footer部分
 		fill_node_footer_blkaddr(page, NEXT_FREE_BLKADDR(sbi, curseg));
-
+		//计算检查和？
 		f2fs_inode_chksum_set(sbi, page);
 	}
 
@@ -3420,14 +3496,21 @@ static void update_device_state(struct f2fs_io_info *fio)
 	}
 }
 
+/**异地更新写的1,2,3步
+ * 1、分配新的逻辑块地址
+ * 2、将旧的逻辑块地址无效掉，等待GC回收
+ * 3、将数据写入到新的逻辑块地址
+*/
 static void do_write_page(struct f2fs_summary *sum, struct f2fs_io_info *fio)
 {
-	int type = __get_segment_type(fio);
+	//获取这次fio的数据类型，是冷热温* node/data的哪一种
+	int type = __get_segment_type(fio);	
 	bool keep_order = (f2fs_lfs_mode(fio->sbi) && type == CURSEG_COLD_DATA);
 
 	if (keep_order)
 		down_read(&fio->sbi->io_order_lock);
 reallocate:
+	//完成异步更新的1,2步
 	f2fs_allocate_data_block(fio->sbi, fio->page, fio->old_blkaddr,
 			&fio->new_blkaddr, sum, type, fio);
 	if (GET_SEGNO(fio->sbi, fio->old_blkaddr) != NULL_SEGNO)
@@ -3435,6 +3518,7 @@ reallocate:
 					fio->old_blkaddr, fio->old_blkaddr);
 
 	/* writeout dirty page into bdev */
+	//完成异步更新的第3步
 	f2fs_submit_page_write(fio);
 	if (fio->retry) {
 		fio->old_blkaddr = fio->new_blkaddr;
@@ -3484,6 +3568,15 @@ void f2fs_do_write_node_page(unsigned int nid, struct f2fs_io_info *fio)
 	f2fs_update_iostat(fio->sbi, fio->io_type, F2FS_BLKSIZE);
 }
 
+/**
+ * f2fs_outplace_write_data主要用于异地更新
+ * 异地更新即不再原先的逻辑块数据更新，因此分为四步：
+ * 1、分配新的逻辑块地址
+ * 2、将旧的物理地址无效掉，等待GC回收
+ * 3、将数据写入到新的物理地址
+ * 4、更新逻辑地址和物理地址的映射关系
+ * 
+*/
 void f2fs_outplace_write_data(struct dnode_of_data *dn,
 					struct f2fs_io_info *fio)
 {
@@ -3492,9 +3585,10 @@ void f2fs_outplace_write_data(struct dnode_of_data *dn,
 
 	f2fs_bug_on(sbi, dn->data_blkaddr == NULL_ADDR);
 	set_summary(&sum, dn->nid, dn->ofs_in_node, fio->version);
-	do_write_page(&sum, fio);
-	f2fs_update_data_blkaddr(dn, fio->new_blkaddr);
+	do_write_page(&sum, fio);	//1,2,3步在这里完成
+	f2fs_update_data_blkaddr(dn, fio->new_blkaddr);	//第4步更新映射，在这里完成
 
+	
 	f2fs_update_iostat(sbi, fio->io_type, F2FS_BLKSIZE);
 }
 
@@ -3643,6 +3737,7 @@ void f2fs_replace_block(struct f2fs_sb_info *sbi, struct dnode_of_data *dn,
 	f2fs_update_data_blkaddr(dn, new_addr);
 }
 
+//等待页写会
 void f2fs_wait_on_page_writeback(struct page *page,
 				enum page_type type, bool ordered, bool locked)
 {

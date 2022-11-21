@@ -109,6 +109,7 @@ int f2fs_read_inline_data(struct inode *inode, struct page *page)
 	return 0;
 }
 
+//f2fs转换成inline数据page
 int f2fs_convert_inline_page(struct dnode_of_data *dn, struct page *page)
 {
 	struct f2fs_io_info fio = {
@@ -181,6 +182,7 @@ clear_out:
 	return 0;
 }
 
+//转换inline的inode
 int f2fs_convert_inline_inode(struct inode *inode)
 {
 	struct f2fs_sb_info *sbi = F2FS_I_SB(inode);
@@ -188,6 +190,7 @@ int f2fs_convert_inline_inode(struct inode *inode)
 	struct page *ipage, *page;
 	int err = 0;
 
+	//判定是否含有inline数据
 	if (!f2fs_has_inline_data(inode))
 		return 0;
 
@@ -195,14 +198,17 @@ int f2fs_convert_inline_inode(struct inode *inode)
 	if (!page)
 		return -ENOMEM;
 
+	//获取操作锁
 	f2fs_lock_op(sbi);
-
+	
+	//获取inode 数据page
 	ipage = f2fs_get_node_page(sbi, inode->i_ino);
 	if (IS_ERR(ipage)) {
 		err = PTR_ERR(ipage);
 		goto out;
 	}
 
+	//设置dnode数据
 	set_new_dnode(&dn, inode, ipage, ipage, 0);
 
 	if (f2fs_has_inline_data(inode))
@@ -210,6 +216,7 @@ int f2fs_convert_inline_inode(struct inode *inode)
 
 	f2fs_put_dnode(&dn);
 out:
+	//释放操作锁
 	f2fs_unlock_op(sbi);
 
 	f2fs_put_page(page, 1);

@@ -84,15 +84,22 @@ static inline void sanity_check_seg_type(struct f2fs_sb_info *sbi,
 #define SEGMENT_SIZE(sbi)	(1ULL << ((sbi)->log_blocksize +	\
 					(sbi)->log_blocks_per_seg))
 
+//根据段号获取起始逻辑块地址
 #define START_BLOCK(sbi, segno)	(SEG0_BLKADDR(sbi) +			\
 	 (GET_R2L_SEGNO(FREE_I(sbi), segno) << (sbi)->log_blocks_per_seg))
 
+//获取current段下一个可用逻辑地址
 #define NEXT_FREE_BLKADDR(sbi, curseg)					\
 	(START_BLOCK(sbi, (curseg)->segno) + (curseg)->next_blkoff)
 
+//获取seg相比seg0的逻辑块地址偏移量
 #define GET_SEGOFF_FROM_SEG0(sbi, blk_addr)	((blk_addr) - SEG0_BLKADDR(sbi))
+
+//获取逻辑块地址所属的段号
 #define GET_SEGNO_FROM_SEG0(sbi, blk_addr)				\
 	(GET_SEGOFF_FROM_SEG0(sbi, blk_addr) >> (sbi)->log_blocks_per_seg)
+
+//获取逻辑块地址在段内的块偏移量
 #define GET_BLKOFF_FROM_SEG0(sbi, blk_addr)				\
 	(GET_SEGOFF_FROM_SEG0(sbi, blk_addr) & ((sbi)->blocks_per_seg - 1))
 
@@ -219,7 +226,7 @@ struct seg_entry {
 	 * checkpoint pack. This information is used by the SSR mode.
 	 */
 	unsigned char *ckpt_valid_map;	/* validity bitmap of blocks last cp*/
-	unsigned char *discard_map;
+	unsigned char *discard_map;		/*discard bitmap ，猜测与需要发送discard命令的块有关*/
 	unsigned long long mtime;	/* modification time of the segment */
 };
 
@@ -256,8 +263,8 @@ struct sit_info {
 	unsigned int bitmap_size;	/* SIT bitmap size */
 
 	unsigned long *tmp_map;			/* bitmap for temporal use */
-	unsigned long *dirty_sentries_bitmap;	/* bitmap for dirty sentries */
-	unsigned int dirty_sentries;		/* # of dirty sentries */
+	unsigned long *dirty_sentries_bitmap;	/* bitmap for dirty sentries，用于记录脏段的bitmap，1代表段为脏段*/
+	unsigned int dirty_sentries;		/* # of dirty sentries ，用于记录脏段数量*/
 	unsigned int sents_per_block;		/* # of SIT entries per block */
 	struct rw_semaphore sentry_lock;	/* to protect SIT cache */
 	struct seg_entry *sentries;		/* SIT segment-level cache */
@@ -292,17 +299,20 @@ enum dirty_type {
 	DIRTY_HOT_NODE,		/* dirty segments assigned as hot node logs */
 	DIRTY_WARM_NODE,	/* dirty segments assigned as warm node logs */
 	DIRTY_COLD_NODE,	/* dirty segments assigned as cold node logs */
-	DIRTY,			/* to count # of dirty segments */
-	PRE,			/* to count # of entirely obsolete segments */
+	DIRTY,				/* to count # of dirty segments */
+	PRE,				/* to count # of entirely obsolete segments，计数完全淘汰/使用完的段*/
 	NR_DIRTY_TYPE
 };
 
+/**
+ * 脏段列表info
+*/
 struct dirty_seglist_info {
 	const struct victim_selection *v_ops;	/* victim selction operation */
 	unsigned long *dirty_segmap[NR_DIRTY_TYPE];
 	unsigned long *dirty_secmap;
 	struct mutex seglist_lock;		/* lock for segment bitmaps */
-	int nr_dirty[NR_DIRTY_TYPE];		/* # of dirty segments */
+	int nr_dirty[NR_DIRTY_TYPE];		/* # of dirty segments，配合dirty_segmap使用用于计数*/
 	unsigned long *victim_secmap;		/* background GC victims */
 };
 
@@ -320,13 +330,15 @@ struct victim_selection {
 */
 struct curseg_info {
 	struct mutex curseg_mutex;		/* lock for consistency */
-	struct f2fs_summary_block *sum_blk;	/* cached summary block 每一个segment对应一个summary block*/
+	struct f2fs_summary_block *sum_blk;	/** cached summary block，curseg内部的f2fs_summary_block数组
+										 *每一个segment对应一个summary block
+										 */
 	struct rw_semaphore journal_rwsem;	/* protect journal area */
 	struct f2fs_journal *journal;		/* cached journal info  每一个segment对应一个sit_journal_entry ?*/
 	unsigned char alloc_type;		/* current allocation type */
 	unsigned short seg_type;		/* segment type like CURSEG_XXX_TYPE */
 	unsigned int segno;			/* current segment number 当前的segment号*/
-	unsigned short next_blkoff;		/* next block offset to write 当前的sgement用于分配的下一个block号*/
+	unsigned short next_blkoff;		/* next block offset to write 当前的sgement用于分配的下一个block的段内偏移量*/
 	unsigned int zone;			/* current zone number */
 	unsigned int next_segno;		/* preallocated segment */
 	bool inited;				/* indicate inmem log is inited */
@@ -362,7 +374,7 @@ static inline struct sec_entry *get_sec_entry(struct f2fs_sb_info *sbi,
 	return &sit_i->sec_entries[GET_SEC_FROM_SEG(sbi, segno)];
 }
 
-//计算获取段内的valid block数量
+//计算获取段/section内的valid block数量
 static inline unsigned int get_valid_blocks(struct f2fs_sb_info *sbi,
 				unsigned int segno, bool use_section)
 {

@@ -19,12 +19,15 @@
 #define F2FS_BLKSIZE_BITS		12	/* bits for F2FS_BLKSIZE */
 #define F2FS_MAX_EXTENSION		64	/* # of extension entries */
 #define F2FS_EXTENSION_LEN		8	/* max size of extension */
-#define F2FS_BLK_ALIGN(x)	(((x) + F2FS_BLKSIZE - 1) >> F2FS_BLKSIZE_BITS)
+
+//根据文件指针的偏移量（字节）,计算从文件内第几个block开始写入
+#define F2FS_BLK_ALIGN(x)	(((x) + F2FS_BLKSIZE - 1) >> F2FS_BLKSIZE_BITS)		
 
 #define NULL_ADDR		((block_t)0)	/* used as block_t addresses */
 #define NEW_ADDR		((block_t)-1)	/* used as block_t addresses */
 #define COMPRESS_ADDR		((block_t)-2)	/* used as compressed data flag */
 
+//一般用于计算写入量的单位转换,字节转块数
 #define F2FS_BYTES_TO_BLK(bytes)	((bytes) >> F2FS_BLKSIZE_BITS)
 #define F2FS_BLK_TO_BYTES(blk)		((blk) << F2FS_BLKSIZE_BITS)
 
@@ -217,15 +220,22 @@ struct f2fs_extent {
 #define F2FS_NAME_LEN		255
 /* 200 bytes for inline xattrs by default */
 #define DEFAULT_INLINE_XATTR_ADDRS	50
+
+//inode内的逻辑数据块指针个数
 #define DEF_ADDRS_PER_INODE	923	/* Address Pointers in an Inode */
 #define CUR_ADDRS_PER_INODE(inode)	(DEF_ADDRS_PER_INODE - \
 					get_extra_isize(inode))
 #define DEF_NIDS_PER_INODE	5	/* Node IDs in an Inode */
+
+//计算每个inode的地址数?
 #define ADDRS_PER_INODE(inode)	addrs_per_inode(inode)
 #define DEF_ADDRS_PER_BLOCK	1018	/* Address Pointers in a Direct Block */
 #define ADDRS_PER_BLOCK(inode)	addrs_per_block(inode)
+
+//一个indirect node block里包含的nid数量
 #define NIDS_PER_BLOCK		1018	/* Node IDs in an Indirect Block */
 
+//计算page内的数据块地址数量
 #define ADDRS_PER_PAGE(page, inode)	\
 	(IS_INODE(page) ? ADDRS_PER_INODE(inode) : ADDRS_PER_BLOCK(inode))
 
@@ -292,18 +302,31 @@ struct f2fs_inode {
 			__le16 i_padding;		/* padding */
 			__le32 i_extra_end[0];	/* for attribute size calculation */
 		} __packed;
-		__le32 i_addr[DEF_ADDRS_PER_INODE];	/* Pointers to data blocks ，直接指向数据块的地址数组部分*/
+		/** Pointers to data blocks ，直接指向数据块的地址数组部分，下标可以代表文件的逻辑序号
+		 *  DEF_ADDRS_PER_INODE的数组长度只要923，这是因为f2fs_inode只能直接所引导923个数据块，约3.6MB
+		 *  对于更大的文件需要使用间接寻址，配合i_nid使用
+		 *  当文件数据足够小的时候,f2fs_inode使用i_addr直接存放文件数据，最大尺寸为3688字节
+		*/
+		__le32 i_addr[DEF_ADDRS_PER_INODE];	
 	};
+	/**
+	 * 用于间接寻址,长度为5
+	 * 0-1 为direct node
+	 * 2-3 为indirect_node，且指向direct_node
+	 * 4 为indirect_node，且指向indirec_node
+	*/
 	__le32 i_nid[DEF_NIDS_PER_INODE];	/* direct(2), indirect(2),
 						double_indirect(1) node id */
 } __packed;
 
+//direct_node结构
 struct direct_node {
-	__le32 addr[DEF_ADDRS_PER_BLOCK];	/* array of data block address */
+	__le32 addr[DEF_ADDRS_PER_BLOCK];	/* array of data block address ,记录的是数据块的逻辑块地址，存1018个*/
 } __packed;
 
+//indirect_node
 struct indirect_node {
-	__le32 nid[NIDS_PER_BLOCK];	/* array of data block address */
+	__le32 nid[NIDS_PER_BLOCK];	/* array of data block address ，记录的是node的id，通过nat表找到地址，同样存1018个*/
 } __packed;
 
 enum {
@@ -433,7 +456,7 @@ struct f2fs_sit_block {
 #define SUM_ENTRY_SIZE		(SUMMARY_SIZE * ENTRIES_IN_SUM)		/* 512 * 7 */
 
 /** a summary entry for a 4KB-sized block in a segment 
- * SSA中每个block对应着一条f2fs_summary
+ *  SSA中每个block对应着一条f2fs_summary
  * 一条summary根据自身所在的segment和下标可以确定逻辑块地址
  * 通过这个条目反向找到索引这个数据块的node的nid和node page内的偏移量
 */

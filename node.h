@@ -300,6 +300,7 @@ static inline void fill_node_footer(struct page *page, nid_t nid,
 					(old_flag & OFFSET_BIT_MASK));
 }
 
+//两个f2fs_node之间拷贝footer结构
 static inline void copy_node_footer(struct page *dst, struct page *src)
 {
 	struct f2fs_node *src_rn = F2FS_NODE(src);
@@ -307,15 +308,19 @@ static inline void copy_node_footer(struct page *dst, struct page *src)
 	memcpy(&dst_rn->footer, &src_rn->footer, sizeof(struct node_footer));
 }
 
+//如果page是某一个node page
 static inline void fill_node_footer_blkaddr(struct page *page, block_t blkaddr)
-{
+{	
+	//获取f2fs_sb_info从而进一步获取ckpt
 	struct f2fs_checkpoint *ckpt = F2FS_CKPT(F2FS_P_SB(page));
 	struct f2fs_node *rn = F2FS_NODE(page);
+	//获取当前cp版本
 	__u64 cp_ver = cur_cp_version(ckpt);
 
 	if (__is_set_ckpt_flags(ckpt, CP_CRC_RECOVERY_FLAG))
 		cp_ver |= (cur_cp_crc(ckpt) << 32);
 
+	//设置node结构中的cp_ver，以及下一个node page 逻辑块可用的地址?
 	rn->footer.cp_ver = cpu_to_le64(cp_ver);
 	rn->footer.next_blkaddr = cpu_to_le32(blkaddr);
 }
@@ -374,25 +379,36 @@ static inline bool IS_DNODE(struct page *node_page)
 	return true;
 }
 
+/**
+ * 设置新的nid
+*/
 static inline int set_nid(struct page *p, int off, nid_t nid, bool i)
 {
 	struct f2fs_node *rn = F2FS_NODE(p);
 
+	//等待之前的page修改写回
 	f2fs_wait_on_page_writeback(p, NODE, true, true);
 
+	//如果是inode
 	if (i)
 		rn->i.i_nid[off - NODE_DIR1_BLOCK] = cpu_to_le32(nid);
+	//如果是其他节点
 	else
 		rn->in.nid[off] = cpu_to_le32(nid);
 	return set_page_dirty(p);
 }
 
+/**从上一层的inode page里读取出本层的node id 
+ * @param i 代表是否为inode
+*/
 static inline nid_t get_nid(struct page *p, int off, bool i)
 {
 	struct f2fs_node *rn = F2FS_NODE(p);
 
+	//如果是inode
 	if (i)
 		return le32_to_cpu(rn->i.i_nid[off - NODE_DIR1_BLOCK]);
+	//如果是其他节点，直接读取
 	return le32_to_cpu(rn->in.nid[off]);
 }
 

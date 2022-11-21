@@ -4049,57 +4049,87 @@ static ssize_t f2fs_file_read_iter(struct kiocb *iocb, struct iov_iter *iter)
 	return ret;
 }
 
-//数据写入文件之前的预处理
+/**数据写入文件之前的预处理，核心流程是对该文件对应地f2fs_inode或者direct_node的i_addr和addr进行初始化
+ * 如果是添加写，那么对应位置应该为NULL_ADDR
+ * 如果是覆盖写，不做任何处理
+ * @param iocb
+ * 参数中的kiocb是一个file结构，用于记录文件侧的读写偏移等信息，结构参考：
+ *  struct kiocb {
+ *	struct file		*ki_filp;   //open文件创建的file结构 The 'ki_filp' pointer is shared in a union for aio randomized_struct_fields_start
+ *	loff_t			ki_pos;     //数据偏移
+ *	void (*ki_complete)(struct kiocb *iocb, long ret, long ret2);    //IO完成回调
+ *	void			*private;
+ *	int			ki_flags;      //IO属性
+ *	u16			ki_hint;
+ *	u16			ki_ioprio; 	  //See linux/ioprio.h 
+ *	unsigned int		ki_cookie; // for ->iopoll 
+ *	randomized_struct_fields_end
+ *	}
+ *  @param from
+ *  from实际上是一个迭代器，用于遍历iovec结构，iovec用于描述用户态的缓冲区数据,iov_iter对其进行遍历
+*/
 static ssize_t f2fs_file_write_iter(struct kiocb *iocb, struct iov_iter *from)
 {
 	struct file *file = iocb->ki_filp;
-	struct inode *inode = file_inode(file);
+	struct inode *inode = file_inode(file);	//linux内核函数，基于file结构返回inode结构
 	ssize_t ret;
 
+	//检查是否有cp错误
 	if (unlikely(f2fs_cp_error(F2FS_I_SB(inode)))) {
 		ret = -EIO;
 		goto out;
 	}
-
+	
+	//检查后端压缩是否正常
 	if (!f2fs_is_compress_backend_ready(inode)) {
 		ret = -EOPNOTSUPP;
 		goto out;
 	}
 
+	//如果iocb中设置了非阻塞IO,那么如果无法获取inode锁直接返回
 	if (iocb->ki_flags & IOCB_NOWAIT) {
 		if (!inode_trylock(inode)) {
 			ret = -EAGAIN;
 			goto out;
 		}
-	} else {
+	}
+	//对于阻塞IO，等待到获取锁 
+	else {
 		inode_lock(inode);
 	}
 
+	//写请求检查，检查对该文件是否有写权限、写入数据之后是否超过系统文件大小限制、调整写入位置和写入字节数、写入量不超过缓存大小
 	ret = generic_write_checks(iocb, from);
 	if (ret > 0) {
 		bool preallocated = false;
 		size_t target_size = 0;
 		int err;
 
+		//判断是否跳过预分配阶段
 		if (iov_iter_fault_in_readable(from, iov_iter_count(from)))
 			set_inode_flag(inode, FI_NO_PREALLOC);
 
+		//如果为非阻塞IO，执行以下检查：1.不是覆盖写 2.f2fs存在内联数据 3.开启了buffered io
 		if ((iocb->ki_flags & IOCB_NOWAIT)) {
 			if (!f2fs_overwrite_io(inode, iocb->ki_pos,
-						iov_iter_count(from)) ||
+						iov_iter_count(from)) ||		//iov_iter_count用于监测from迭代器的成员变量count
 				f2fs_has_inline_data(inode) ||
 				f2fs_force_buffered_io(inode, iocb, from)) {
+				//清除预分配flag、释放锁、进入out
 				clear_inode_flag(inode, FI_NO_PREALLOC);
 				inode_unlock(inode);
 				ret = -EAGAIN;
 				goto out;
 			}
+			//满足条件进入write
 			goto write;
 		}
 
+		//如果设置跳过预分配，直接进入write
 		if (is_inode_flag_set(inode, FI_NO_PREALLOC))
 			goto write;
 
+		//如果设置了DIRECT IO
 		if (iocb->ki_flags & IOCB_DIRECT) {
 			/*
 			 * Convert inline data for Direct I/O before entering
@@ -4120,7 +4150,7 @@ static ssize_t f2fs_file_write_iter(struct kiocb *iocb, struct iov_iter *from)
 		preallocated = true;
 		target_size = iocb->ki_pos + iov_iter_count(from);
 		/**
-		 * f2fs的预处理
+		 * f2fs进行data段的逻辑块的预分配,分配好之后再进行数据落盘
 		*/
 		err = f2fs_preallocate_blocks(iocb, from);
 		if (err) {
@@ -4211,10 +4241,21 @@ long f2fs_compat_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 }
 #endif
 
-//f2fs文件操作结构体，注册了f2fs文件操作的各个函数
+//f2fs文件操作结构体，注册了f2fs文件操作的各个函数，VFS通过这个接口来进行调用
 const struct file_operations f2fs_file_operations = {
 	.llseek		= f2fs_llseek,
 	.read_iter	= f2fs_file_read_iter,
+	/**
+	 * 调用链：
+	 * Write
+	 * 系统调用
+	 * vfs_write
+	 * new_sync_write
+	 * file
+	 * f_op
+	 * write_iter
+	 * f2fs_file_write_iter
+	*/
 	.write_iter	= f2fs_file_write_iter,
 	.open		= f2fs_file_open,
 	.release	= f2fs_release_file,

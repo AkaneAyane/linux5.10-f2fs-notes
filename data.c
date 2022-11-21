@@ -1097,6 +1097,7 @@ static int f2fs_submit_page_read(struct inode *inode, struct page *page,
 	return 0;
 }
 
+//根据dn来设置dn中的direct node中的地址数组的值
 static void __set_data_blkaddr(struct dnode_of_data *dn)
 {
 	struct f2fs_node *rn = F2FS_NODE(dn->node_page);
@@ -1116,23 +1117,33 @@ static void __set_data_blkaddr(struct dnode_of_data *dn)
  * ->data_page
  *  ->node_page
  *    update block addresses in the node page
+ * 	更新文件node中的映射关系
  */
 void f2fs_set_data_blkaddr(struct dnode_of_data *dn)
-{
+{	
+	//需要更新node，因此保证node是最新状态
 	f2fs_wait_on_page_writeback(dn->node_page, NODE, true, true);
+	//将dn更新到对应地node page中
 	__set_data_blkaddr(dn);
+	//将node page设置为脏等待落盘
 	if (set_page_dirty(dn->node_page))
 		dn->node_changed = true;
 }
 
+//更新文件映射关系，通过dn将新的物理地址更新到f2fs_inode/direct_node的对应地位置当中
 void f2fs_update_data_blkaddr(struct dnode_of_data *dn, block_t blkaddr)
-{
+{	
+	//新的逻辑块地址放入dn
 	dn->data_blkaddr = blkaddr;
+	//更新到对应地f2fs_inode/direct node
 	f2fs_set_data_blkaddr(dn);
+	//更新文件cache
 	f2fs_update_extent_cache(dn);
 }
 
-/* dn->ofs_in_node will be returned with up-to-date last block pointer */
+/** dn->ofs_in_node will be returned with up-to-date last block pointer 
+ *  dn会返回到第一个block处开始向后处理
+*/
 int f2fs_reserve_new_blocks(struct dnode_of_data *dn, blkcnt_t count)
 {
 	struct f2fs_sb_info *sbi = F2FS_I_SB(dn->inode);
@@ -1151,6 +1162,7 @@ int f2fs_reserve_new_blocks(struct dnode_of_data *dn, blkcnt_t count)
 
 	f2fs_wait_on_page_writeback(dn->node_page, NODE, true, true);
 
+	//向后处理,为Null_ADDR赋值为new_addr
 	for (; count > 0; dn->ofs_in_node++) {
 		block_t blkaddr = f2fs_data_blkaddr(dn);
 		if (blkaddr == NULL_ADDR) {
@@ -1429,21 +1441,28 @@ alloc:
 	return 0;
 }
 
+/**
+ * f2fs的文件数据块的预分配操作
+*/
 int f2fs_preallocate_blocks(struct kiocb *iocb, struct iov_iter *from)
-{
-	struct inode *inode = file_inode(iocb->ki_filp);
+{	
+	//获取vfs层inode
+	struct inode *inode = file_inode(iocb->ki_filp);	
 	struct f2fs_map_blocks map;
 	int flag;
 	int err = 0;
 	bool direct_io = iocb->ki_flags & IOCB_DIRECT;
 
-	map.m_lblk = F2FS_BLK_ALIGN(iocb->ki_pos);
-	map.m_len = F2FS_BYTES_TO_BLK(iocb->ki_pos + iov_iter_count(from));
+	map.m_lblk = F2FS_BLK_ALIGN(iocb->ki_pos); //根据文件指针偏移量计算需要从第几个block开始写入
+	
+	//计算要写入的block个数，这里我理解计算的是要跨多少个block？
+	map.m_len = F2FS_BYTES_TO_BLK(iocb->ki_pos + iov_iter_count(from));	
 	if (map.m_len > map.m_lblk)
 		map.m_len -= map.m_lblk;
 	else
 		map.m_len = 0;
 
+	//初始化变量信息
 	map.m_next_pgofs = NULL;
 	map.m_next_extent = NULL;
 	map.m_seg_type = NO_CHECK_TYPE;
@@ -1476,6 +1495,7 @@ map_blocks:
 	return err;
 }
 
+//进行node修改相关的锁操作
 void f2fs_do_map_lock(struct f2fs_sb_info *sbi, int flag, bool lock)
 {
 	if (flag == F2FS_GET_BLOCK_PRE_AIO) {
@@ -1495,13 +1515,17 @@ void f2fs_do_map_lock(struct f2fs_sb_info *sbi, int flag, bool lock)
  * f2fs_map_blocks() tries to find or build mapping relationship which
  * maps continuous logical blocks to physical blocks, and return such
  * info via f2fs_map_blocks structure.
+ * 构建文件内逻辑地址也就是偏移指针到全局逻辑块地址的映射
+ * 在写流程中，使用本函数主要是初始化地址信息
  */
 int f2fs_map_blocks(struct inode *inode, struct f2fs_map_blocks *map,
 						int create, int flag)
-{
+{	
+	//首先记录的是最多的块数
 	unsigned int maxblocks = map->m_len;
 	struct dnode_of_data dn;
 	struct f2fs_sb_info *sbi = F2FS_I_SB(inode);
+	//通过此变量判断在读还是写路径上
 	int mode = map->m_may_create ? ALLOC_NODE : LOOKUP_NODE;
 	pgoff_t pgofs, end_offset, end;
 	int err = 0, ofs = 1;
@@ -1511,13 +1535,17 @@ int f2fs_map_blocks(struct inode *inode, struct f2fs_map_blocks *map,
 	block_t blkaddr;
 	unsigned int start_pgofs;
 
+	//如果maxblocks为0不需要继续进行了
 	if (!maxblocks)
 		return 0;
 
 	map->m_len = 0;
 	map->m_flags = 0;
 
-	/* it only supports block size == page size */
+	/** 
+	 *  注意以下的逻辑只适用于block size == page size
+	 *  分别计算起始和最后一个pg的地址
+	*/
 	pgofs =	(pgoff_t)map->m_lblk;
 	end = pgofs + maxblocks;
 
@@ -1540,12 +1568,17 @@ int f2fs_map_blocks(struct inode *inode, struct f2fs_map_blocks *map,
 	}
 
 next_dnode:
+	//如果是写流程，那么
 	if (map->m_may_create)
 		f2fs_do_map_lock(sbi, flag, true);
 
 	/* When reading holes, we need its node page */
+	
+	//初始化dn，dn的作用是根据文件逻辑地址找到逻辑块地址
 	set_new_dnode(&dn, inode, NULL, NULL, 0);
+	//根据pgofs填充dnode，得到逻辑块地址
 	err = f2fs_get_dnode_of_data(&dn, pgofs, mode);
+	//错误处理
 	if (err) {
 		if (flag == F2FS_GET_BLOCK_BMAP)
 			map->m_pblk = 0;
@@ -1563,20 +1596,25 @@ next_dnode:
 
 	start_pgofs = pgofs;
 	prealloc = 0;
+	//ofs_in_node中记录了第一个dn.ofs_in_node
 	last_ofs_in_node = ofs_in_node = dn.ofs_in_node;
 	end_offset = ADDRS_PER_PAGE(dn.node_page, inode);
 
 next_block:
+	//从dn中获取出下一个需要处理的逻辑块地址,可能有旧值可能没有值
 	blkaddr = f2fs_data_blkaddr(&dn);
 
+	//验证逻辑块正确性
 	if (__is_valid_data_blkaddr(blkaddr) &&
 		!f2fs_is_valid_blkaddr(sbi, blkaddr, DATA_GENERIC_ENHANCE)) {
 		err = -EFSCORRUPTED;
 		goto sync_out;
 	}
-
+	//通过_is_valid_data_blkaddr判断是否存在旧数据
 	if (__is_valid_data_blkaddr(blkaddr)) {
-		/* use out-place-update for driect IO under LFS mode */
+		/** use out-place-update for driect IO under LFS mode ，
+		 * 如果存在旧数据，通过direct IO LFS方式更新新的逻辑块
+		 */
 		if (f2fs_lfs_mode(sbi) && flag == F2FS_GET_BLOCK_DIO &&
 							map->m_may_create) {
 			err = __allocate_data_block(&dn, map->m_seg_type);
@@ -1585,16 +1623,19 @@ next_block:
 			blkaddr = dn.data_blkaddr;
 			set_inode_flag(inode, FI_APPEND_WRITE);
 		}
-	} else {
+	}
+	else {
+		//不存在那么开始创建
 		if (create) {
 			if (unlikely(f2fs_cp_error(sbi))) {
 				err = -EIO;
 				goto sync_out;
 			}
 			if (flag == F2FS_GET_BLOCK_PRE_AIO) {
+				//如果为NULL_ADDR,需要进行添加写
 				if (blkaddr == NULL_ADDR) {
-					prealloc++;
-					last_ofs_in_node = dn.ofs_in_node;
+					prealloc++;							//记录需要添加写的个数
+					last_ofs_in_node = dn.ofs_in_node;	//记录本轮循环的ofs_in_node
 				}
 			} else {
 				WARN_ON(flag != F2FS_GET_BLOCK_PRE_DIO &&
@@ -1606,8 +1647,8 @@ next_block:
 			}
 			if (err)
 				goto sync_out;
-			map->m_flags |= F2FS_MAP_NEW;
-			blkaddr = dn.data_blkaddr;
+			map->m_flags |= F2FS_MAP_NEW;  			 //F2FS_MAP_NEW表示正在处理一个从未使用过的数据
+			blkaddr = dn.data_blkaddr; 	  			 //记录当前的数据块地址
 		} else {
 			if (flag == F2FS_GET_BLOCK_BMAP) {
 				map->m_pblk = 0;
@@ -1652,15 +1693,19 @@ next_block:
 	}
 
 skip:
+	//dn中的ofs_in_node向后移动，同时pgofs移动这是循环的关键
 	dn.ofs_in_node++;
 	pgofs++;
 
-	/* preallocate blocks in batch for one dnode page */
+	/** preallocate blocks in batch for one dnode page 
+	 *	接下来的处理代表已经处理到了最后一个block  
+	*/
 	if (flag == F2FS_GET_BLOCK_PRE_AIO &&
 			(pgofs == end || dn.ofs_in_node == end_offset)) {
-
-		dn.ofs_in_node = ofs_in_node;
+		
+		//回到第一个block处，并且dn也会根据prealloc的数量回到初始状态
 		err = f2fs_reserve_new_blocks(&dn, prealloc);
+		dn.ofs_in_node = ofs_in_node;
 		if (err)
 			goto sync_out;
 
@@ -1671,9 +1716,11 @@ skip:
 		}
 		dn.ofs_in_node = end_offset;
 	}
-
+	
+	//结束循环，退出本函数
 	if (pgofs >= end)
 		goto sync_out;
+	//通过goto方式实现block循环处理
 	else if (dn.ofs_in_node < end_offset)
 		goto next_block;
 
@@ -1693,6 +1740,7 @@ skip:
 		f2fs_do_map_lock(sbi, flag, false);
 		f2fs_balance_fs(sbi, dn.node_changed);
 	}
+	
 	goto next_dnode;
 
 sync_out:
@@ -1716,6 +1764,7 @@ sync_out:
 	f2fs_put_dnode(&dn);
 unlock_out:
 	if (map->m_may_create) {
+		//释放锁
 		f2fs_do_map_lock(sbi, flag, false);
 		f2fs_balance_fs(sbi, dn.node_changed);
 	}
@@ -1724,6 +1773,9 @@ out:
 	return err;
 }
 
+/**
+ * 判断f2fs本次写入是否为overwrite?
+*/
 bool f2fs_overwrite_io(struct inode *inode, loff_t pos, size_t len)
 {
 	struct f2fs_map_blocks map;
@@ -2602,6 +2654,12 @@ static inline bool need_inplace_update(struct f2fs_io_info *fio)
 	return f2fs_should_update_inplace(inode, fio);
 }
 
+/**
+ * 普通文件写入方式 
+ * 该函数的作用是根据系统的状态选择就地更新数据还是异地更新数据
+ * 一般来说，系统只会在磁盘空间比较满的时候选择就地更新策略,避免触发GC
+ * 
+*/
 int f2fs_do_write_data_page(struct f2fs_io_info *fio)
 {
 	struct page *page = fio->page;
@@ -2612,7 +2670,10 @@ int f2fs_do_write_data_page(struct f2fs_io_info *fio)
 	bool ipu_force = false;
 	int err = 0;
 
+	//初始化dn
 	set_new_dnode(&dn, inode, NULL, NULL, 0);
+	
+	//就地更新流程
 	if (need_inplace_update(fio) &&
 			f2fs_lookup_extent_cache(inode, page->index, &ei)) {
 		fio->old_blkaddr = ei.blk + page->index - ei.fofs;
@@ -2630,19 +2691,25 @@ int f2fs_do_write_data_page(struct f2fs_io_info *fio)
 	if (fio->need_lock == LOCK_REQ && !f2fs_trylock_op(fio->sbi))
 		return -EAGAIN;
 
+	//根据page的的偏移量获取dnode信息
 	err = f2fs_get_dnode_of_data(&dn, page->index, LOOKUP_NODE);
 	if (err)
 		goto out;
 
+	//先记录旧物理地址
 	fio->old_blkaddr = dn.data_blkaddr;
 
-	/* This page is already truncated */
+	/** This page is already truncated 
+	 * 前面提及到f2fs_file_write_iter已经将物理地址设置为NEW_ADDR或者具体的逻辑块地址
+	 * 因此这里表示在写入磁盘之前，用户又将这部分数据删除了，所以没必要写入了
+	*/
 	if (fio->old_blkaddr == NULL_ADDR) {
 		ClearPageUptodate(page);
 		clear_cold_data(page);
 		goto out_writepage;
 	}
 got_it:
+	//验证旧地址状态
 	if (__is_valid_data_blkaddr(fio->old_blkaddr) &&
 		!f2fs_is_valid_blkaddr(fio->sbi, fio->old_blkaddr,
 						DATA_GENERIC_ENHANCE)) {
@@ -2653,6 +2720,8 @@ got_it:
 	 * If current allocation needs SSR,
 	 * it had better in-place writes for updated data.
 	 */
+	
+	//判断是否能够进行就地更新，采取更加适合的方式
 	if (ipu_force ||
 		(__is_valid_data_blkaddr(fio->old_blkaddr) &&
 					need_inplace_update(fio))) {
@@ -2692,7 +2761,7 @@ got_it:
 
 	fio->version = ni.version;
 
-	err = f2fs_encrypt_one_page(fio);
+	err = f2fs_encrypt_one_page(fio);	//如果开启系统加密，会将这个page先进行加密
 	if (err)
 		goto out_writepage;
 
@@ -2703,6 +2772,7 @@ got_it:
 		f2fs_i_compr_blocks_update(inode, fio->compr_blocks - 1, false);
 
 	/* LFS mode write path */
+	//进行实际的异地更新
 	f2fs_outplace_write_data(&dn, fio);
 	trace_f2fs_do_write_data_page(page, OPU);
 	set_inode_flag(inode, FI_APPEND_WRITE);
@@ -2716,6 +2786,10 @@ out:
 	return err;
 }
 
+/**
+ * 写回单个页的实际核心逻辑操作，也是请求发下去的位置
+ * f2fs_write_data_page是对本函数的封装
+*/
 int f2fs_write_single_data_page(struct page *page, int *submitted,
 				struct bio **bio,
 				sector_t *last_block,
@@ -2732,6 +2806,8 @@ int f2fs_write_single_data_page(struct page *page, int *submitted,
 	unsigned offset = 0;
 	bool need_balance_fs = false;
 	int err = 0;
+	//相当关键的数据结构，记录了写入的信息
+	//非常关键的变量是old_blkaddr和new_blkaddr,记录了写入前后的新旧地址
 	struct f2fs_io_info fio = {
 		.sbi = sbi,
 		.ino = inode->i_ino,
@@ -2791,6 +2867,7 @@ write:
 		goto redirty_out;
 
 	/* Dentry/quota blocks are controlled by checkpoint */
+	//如果是目录文件，直接写入不需要修改
 	if (S_ISDIR(inode->i_mode) || IS_NOQUOTA(inode)) {
 		/*
 		 * We need to wait for node_write to avoid block allocation during
@@ -2817,12 +2894,14 @@ write:
 		set_inode_flag(inode, FI_HOT_DATA);
 
 	err = -EAGAIN;
+	//内联文件使用内联的写入方式写入
 	if (f2fs_has_inline_data(inode)) {
 		err = f2fs_write_inline_data(inode, page);
 		if (!err)
 			goto out;
 	}
 
+	//普通文件使用普通方式写入
 	if (err == -EAGAIN) {
 		err = f2fs_do_write_data_page(&fio);
 		if (err == -EAGAIN) {
@@ -2845,7 +2924,7 @@ done:
 		goto redirty_out;
 
 out:
-	inode_dec_dirty_pages(inode);
+	inode_dec_dirty_pages(inode);	//每写入一个page，就清除inode的一个dirty pages，数目-1
 	if (err) {
 		ClearPageUptodate(page);
 		clear_cold_data(page);
@@ -2887,6 +2966,11 @@ redirty_out:
 	return err;
 }
 
+/**
+ * page cache的回写是通过本函数进行，
+ * 系统将page cache中的dirty的pages加入到list中，
+ * 然后传入本函数处理，会做一些预处理操作
+*/
 static int f2fs_write_data_page(struct page *page,
 					struct writeback_control *wbc)
 {
@@ -2913,19 +2997,23 @@ out:
  * This function was copied from write_cche_pages from mm/page-writeback.c.
  * The major change is making write step of cold data page separately from
  * warm/hot data page.
+ * page cache的回写是通过本函数进行，
+ * 本函数将inode对应的mapping（radix tree）中取回所有的dirty的pages，
+ * 通过循环诸葛写入到磁盘
  */
 static int f2fs_write_cache_pages(struct address_space *mapping,
 					struct writeback_control *wbc,
 					enum iostat_type io_type)
 {
 	int ret = 0;
+	//done变量用于循环
 	int done = 0, retry = 0;
-	struct pagevec pvec;
+	struct pagevec pvec;	//该变量用于装载所有需要写回的page，是一个数组，大小为15个page
 	struct f2fs_sb_info *sbi = F2FS_M_SB(mapping);
 	struct bio *bio = NULL;
 	sector_t last_block;
 #ifdef CONFIG_F2FS_FS_COMPRESSION
-	struct inode *inode = mapping->host;
+	struct inode *inode = mapping->host;	//获取page cache的宿主inode
 	struct compress_ctx cc = {
 		.inode = inode,
 		.log_cluster_size = F2FS_I(inode)->i_log_cluster_size,
@@ -2950,7 +3038,8 @@ static int f2fs_write_cache_pages(struct address_space *mapping,
 	int submitted = 0;
 	int i;
 
-	pagevec_init(&pvec);
+
+	pagevec_init(&pvec); 	//pvec数组的初始化操作
 
 	if (get_dirty_pages(mapping->host) <=
 				SM_I(F2FS_M_SB(mapping))->min_hot_blocks)
@@ -2958,6 +3047,7 @@ static int f2fs_write_cache_pages(struct address_space *mapping,
 	else
 		clear_inode_flag(mapping->host, FI_HOT_DATA);
 
+	//取出index
 	if (wbc->range_cyclic) {
 		index = mapping->writeback_index; /* prev offset */
 		end = -1;
@@ -2967,6 +3057,8 @@ static int f2fs_write_cache_pages(struct address_space *mapping,
 		if (wbc->range_start == 0 && wbc->range_end == LLONG_MAX)
 			range_whole = 1;
 	}
+	
+	//赋给每一个page的标志tag
 	if (wbc->sync_mode == WB_SYNC_ALL || wbc->tagged_writepages)
 		tag = PAGECACHE_TAG_TOWRITE;
 	else
@@ -2974,14 +3066,18 @@ static int f2fs_write_cache_pages(struct address_space *mapping,
 retry:
 	retry = 0;
 	if (wbc->sync_mode == WB_SYNC_ALL || wbc->tagged_writepages)
+		//sync模式下，将所有的tag=PAGECACHE_TAG_DIRTY的page标志位PAGECACHE_TAG_TOWRITE
 		tag_pages_for_writeback(mapping, index, end);
 	done_index = index;
+	
+	//开始循环从mapping中取出tag类型的一定量个page，装载到pvec中
 	while (!done && !retry && (index <= end)) {
 		nr_pages = pagevec_lookup_range_tag(&pvec, mapping, &index, end,
 				tag);
 		if (nr_pages == 0)
 			break;
 
+		//根据取出的数量循环落盘
 		for (i = 0; i < nr_pages; i++) {
 			struct page *page = pvec.pages[i];
 			bool need_readd;
@@ -3072,7 +3168,8 @@ continue_unlock:
 				f2fs_compress_ctx_add_page(&cc, page);
 				continue;
 			}
-#endif
+#endif		
+			//落盘的实际操作
 			ret = f2fs_write_single_data_page(page, &submitted,
 					&bio, &last_block, wbc, io_type, 0);
 			if (ret == AOP_WRITEPAGE_ACTIVATE)
@@ -3080,6 +3177,8 @@ continue_unlock:
 #ifdef CONFIG_F2FS_FS_COMPRESSION
 result:
 #endif
+			
+			//累计已经写入的页的量，以及减少剩余需要写的量
 			nwritten += submitted;
 			wbc->nr_to_write -= submitted;
 
@@ -3108,14 +3207,14 @@ result:
 
 			if (wbc->nr_to_write <= 0 &&
 					wbc->sync_mode == WB_SYNC_NONE) {
-				done = 1;
+				done = 1;	//本次writeback的所有page写完就退出
 				break;
 			}
 next:
 			if (need_readd)
 				goto readd;
 		}
-		pagevec_release(&pvec);
+		pagevec_release(&pvec);		//释放掉pvec
 		cond_resched();
 	}
 #ifdef CONFIG_F2FS_FS_COMPRESSION
@@ -3142,6 +3241,9 @@ next:
 	if (wbc->range_cyclic || (range_whole && wbc->nr_to_write > 0))
 		mapping->writeback_index = done_index;
 
+	// page通过一些函数后，会放入到bio中，然后提交到磁盘。
+	// f2fs的机制是不会马上提交bio，需要等到bio包含了一定数目的page之后才会提交
+	// 因此这个函数作用是，即使数目不够，但是仍要强制提交bio，需要与磁盘同步
 	if (nwritten)
 		f2fs_submit_merged_write_cond(F2FS_M_SB(mapping), mapping->host,
 								NULL, 0, DATA);
@@ -3173,6 +3275,10 @@ static inline bool __should_serialize_io(struct inode *inode,
 	return false;
 }
 
+/**
+ * 处理data page写回的实际逻辑
+ * f2fs_write_data_pages是对该函数的封装
+*/
 static int __f2fs_write_data_pages(struct address_space *mapping,
 						struct writeback_control *wbc,
 						enum iostat_type io_type)
@@ -3219,7 +3325,7 @@ static int __f2fs_write_data_pages(struct address_space *mapping,
 	}
 
 	blk_start_plug(&plug);
-	ret = f2fs_write_cache_pages(mapping, wbc, io_type);
+	ret = f2fs_write_cache_pages(mapping, wbc, io_type);	//取回需要回写的pages，然后写入
 	blk_finish_plug(&plug);
 
 	if (locked)
@@ -3232,7 +3338,7 @@ static int __f2fs_write_data_pages(struct address_space *mapping,
 	 * to detect pending bios.
 	 */
 
-	f2fs_remove_dirty_inode(inode);
+	f2fs_remove_dirty_inode(inode);			//写入后将inode的dirty标志清楚，不再需要回写
 	return ret;
 
 skip_write:
@@ -3241,9 +3347,14 @@ skip_write:
 	return 0;
 }
 
+/**
+ * page cache的回写是通过本函数进行，
+ * 然后传入本函数处理，会做一些预处理操作
+*/
 static int f2fs_write_data_pages(struct address_space *mapping,
 			    struct writeback_control *wbc)
-{
+{	
+	//取出宿主inode
 	struct inode *inode = mapping->host;
 
 	return __f2fs_write_data_pages(mapping, wbc,
@@ -3359,6 +3470,10 @@ unlock_out:
 	return err;
 }
 
+/**
+ * 注册到vfs层write_begin函数的实现
+ * 根据用户需要的类型，对page进行初始化
+*/
 static int f2fs_write_begin(struct file *file, struct address_space *mapping,
 		loff_t pos, unsigned len, unsigned flags,
 		struct page **pagep, void **fsdata)
@@ -3419,6 +3534,8 @@ repeat:
 	 * Do not use grab_cache_page_write_begin() to avoid deadlock due to
 	 * wait_for_stable_page. Will wait that below with our IO control.
 	 */
+
+	//第一步创建或者获取page cache
 	page = f2fs_pagecache_get_page(mapping, index,
 				FGP_LOCK | FGP_WRITE | FGP_CREAT, GFP_NOFS);
 	if (!page) {
@@ -3430,6 +3547,7 @@ repeat:
 
 	*pagep = page;
 
+	//根据页偏移信息获取到对应的逻辑块地址
 	err = prepare_write_begin(sbi, page, pos, len,
 					&blkaddr, &need_balance);
 	if (err)
@@ -3458,15 +3576,19 @@ repeat:
 		return 0;
 	}
 
+	//根据写类型，对新创建的page进行初始化处理
+	//如果是添加写，那么先对页使用0填充
 	if (blkaddr == NEW_ADDR) {
 		zero_user_segment(page, 0, PAGE_SIZE);
 		SetPageUptodate(page);
-	} else {
+	} else {	
+		
 		if (!f2fs_is_valid_blkaddr(sbi, blkaddr,
 				DATA_GENERIC_ENHANCE_READ)) {
 			err = -EFSCORRUPTED;
 			goto fail;
 		}
+		//如果是覆盖写，先将旧数据读取出来
 		err = f2fs_submit_page_read(inode, page, blkaddr, 0, true);
 		if (err)
 			goto fail;
@@ -3491,6 +3613,10 @@ fail:
 	return err;
 }
 
+/**
+ * 注册到vfs层write_end函数的实现
+ * 根据用户需要的类型，对page进行初始化
+*/
 static int f2fs_write_end(struct file *file,
 			struct address_space *mapping,
 			loff_t pos, unsigned len, unsigned copied,
@@ -3505,11 +3631,13 @@ static int f2fs_write_end(struct file *file,
 	 * should be PAGE_SIZE. Otherwise, we treat it with zero copied and
 	 * let generic_perform_write() try to copy data again through copied=0.
 	 */
+
+	//判断page cache是否已经达到了最新状态
 	if (!PageUptodate(page)) {
 		if (unlikely(copied != len))
 			copied = 0;
 		else
-			SetPageUptodate(page);
+			SetPageUptodate(page);	//如果不是就处理后设置为最新
 	}
 
 #ifdef CONFIG_F2FS_FS_COMPRESSION
@@ -3528,14 +3656,15 @@ static int f2fs_write_end(struct file *file,
 	if (!copied)
 		goto unlock_out;
 
+	//将page设置为dirty后,就会加入到inode->mapping的radix tree中等待系统回写
 	set_page_dirty(page);
 
 	if (pos + copied > i_size_read(inode) &&
 	    !f2fs_verity_in_progress(inode))
-		f2fs_i_size_write(inode, pos + copied);
+		f2fs_i_size_write(inode, pos + copied);		//更新文件的大小信息
 unlock_out:
 	f2fs_put_page(page, 1);
-	f2fs_update_time(F2FS_I_SB(inode), REQ_TIME);
+	f2fs_update_time(F2FS_I_SB(inode), REQ_TIME);	//更新文件的修改信息
 	return copied;
 }
 
@@ -3706,8 +3835,8 @@ void f2fs_invalidate_page(struct page *page, unsigned int offset,
 			dec_page_count(sbi, F2FS_DIRTY_META);
 		} else if (inode->i_ino == F2FS_NODE_INO(sbi)) {
 			dec_page_count(sbi, F2FS_DIRTY_NODES);
-		} else {
 			inode_dec_dirty_pages(inode);
+		} else {
 			f2fs_remove_dirty_inode(inode);
 		}
 	}
@@ -4112,10 +4241,10 @@ static void f2fs_swap_deactivate(struct file *file)
 const struct address_space_operations f2fs_dblock_aops = {
 	.readpage	= f2fs_read_data_page,
 	.readahead	= f2fs_readahead,
-	.writepage	= f2fs_write_data_page,
+	.writepage	= f2fs_write_data_page,		//page cache中函数的写回操作
 	.writepages	= f2fs_write_data_pages,
-	.write_begin	= f2fs_write_begin,
-	.write_end	= f2fs_write_end,
+	.write_begin	= f2fs_write_begin,		//page cache的预处理
+	.write_end	= f2fs_write_end,			//page cache的结束操作
 	.set_page_dirty	= f2fs_set_data_page_dirty,
 	.invalidatepage	= f2fs_invalidate_page,
 	.releasepage	= f2fs_release_page,

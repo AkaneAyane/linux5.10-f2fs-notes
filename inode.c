@@ -136,6 +136,7 @@ static bool f2fs_enable_inode_chksum(struct f2fs_sb_info *sbi, struct page *page
 	return true;
 }
 
+//计算inode page检查和
 static __u32 f2fs_inode_chksum(struct f2fs_sb_info *sbi, struct page *page)
 {
 	struct f2fs_node *node = F2FS_NODE(page);
