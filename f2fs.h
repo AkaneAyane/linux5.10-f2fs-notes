@@ -706,6 +706,7 @@ enum {
 #define file_clear_encrypt(inode) clear_file(inode, FADVISE_ENCRYPT_BIT)
 #define file_enc_name(inode)	is_file(inode, FADVISE_ENC_NAME_BIT)
 #define file_set_enc_name(inode) set_file(inode, FADVISE_ENC_NAME_BIT)
+//判定该inode的是否开启了keep size
 #define file_keep_isize(inode)	is_file(inode, FADVISE_KEEP_SIZE_BIT)
 #define file_set_keep_isize(inode) set_file(inode, FADVISE_KEEP_SIZE_BIT)
 #define file_is_hot(inode)	is_file(inode, FADVISE_HOT_BIT)
@@ -738,7 +739,7 @@ enum {
 	FI_INLINE_DENTRY,	/* used for inline dentry */
 	FI_APPEND_WRITE,	/* inode has appended data */
 	FI_UPDATE_WRITE,	/* inode has in-place-update data */
-	FI_NEED_IPU,		/* used for ipu per file */
+	FI_NEED_IPU,		/* used for ipu per file ，是否需要就地更新,ipu means in-place update*/
 	FI_ATOMIC_FILE,		/* indicate atomic file */
 	FI_ATOMIC_COMMIT,	/* indicate the state of atomical committing */
 	FI_VOLATILE_FILE,	/* indicate volatile file */
@@ -763,7 +764,7 @@ enum {
 struct f2fs_inode_info {
 	struct inode vfs_inode;		/* serve a vfs inode */
 	unsigned long i_flags;		/* keep an inode flags for ioctl */
-	unsigned char i_advise;		/* use to give file attribute hints */
+	unsigned char i_advise;		/* use to give file attribute hints ，对文件的属性进行提示*/
 	unsigned char i_dir_level;	/* use for dentry level for large dir */
 	unsigned int i_current_depth;	/* only for directory depth */
 	/* for gc failure statistic */
@@ -1069,7 +1070,7 @@ struct f2fs_sm_info {
 
 	unsigned int ipu_policy;	/* in-place-update policy */
 	unsigned int min_ipu_util;	/* in-place-update threshold */
-	unsigned int min_fsync_blocks;	/* threshold for fsync */
+	unsigned int min_fsync_blocks;	/* threshold for fsync ,fsync的最小门限,如果超过了这个门限，那么即使指定了使用fdatasync，仍然使用fsync模式*/
 	unsigned int min_seq_blocks;	/* threshold for sequential blocks */
 	unsigned int min_hot_blocks;	/* threshold for hot block allocation */
 	unsigned int min_ssr_sections;	/* threshold to trigger SSR allocation */
@@ -1150,6 +1151,7 @@ enum need_lock_type {
 	LOCK_RETRY,
 };
 
+//cp的原因
 enum cp_reason_type {
 	CP_NO_NEEDED,
 	CP_NON_REGULAR,
@@ -1794,6 +1796,7 @@ static inline u32 f2fs_chksum(struct f2fs_sb_info *sbi, u32 crc,
 	return __f2fs_crc32(sbi, crc, address, length);
 }
 
+//根据vfs层inode转换得到外层的f2fs_inode
 static inline struct f2fs_inode_info *F2FS_I(struct inode *inode)
 {
 	return container_of(inode, struct f2fs_inode_info, vfs_inode);
@@ -2224,6 +2227,7 @@ static inline s64 get_pages(struct f2fs_sb_info *sbi, int count_type)
 	return atomic_read(&sbi->nr_pages[count_type]);
 }
 
+//获取inode的脏页数量
 static inline int get_dirty_pages(struct inode *inode)
 {
 	return atomic_read(&F2FS_I(inode)->dirty_pages);
@@ -3012,6 +3016,7 @@ static inline int f2fs_has_inline_dentry(struct inode *inode)
 	return is_inode_flag_set(inode, FI_INLINE_DENTRY);
 }
 
+//判断inode中的文件属性提示字段的type位是否开启
 static inline int is_file(struct inode *inode, int type)
 {
 	return F2FS_I(inode)->i_advise & type;
@@ -3043,18 +3048,27 @@ static inline bool f2fs_is_time_consistent(struct inode *inode)
 	return true;
 }
 
+
+/**
+ * 是否需要跳过inode的update 
+*/
 static inline bool f2fs_skip_inode_update(struct inode *inode, int dsync)
 {
 	bool ret;
 
+	//如果是fdatasync模式，判断gdirty_list是否为空
 	if (dsync) {
 		struct f2fs_sb_info *sbi = F2FS_I_SB(inode);
 
 		spin_lock(&sbi->inode_lock[DIRTY_META]);
+		//list_empty判定如果为空返回非0值，如果不为空返回0
 		ret = list_empty(&F2FS_I(inode)->gdirty_list);
 		spin_unlock(&sbi->inode_lock[DIRTY_META]);
 		return ret;
 	}
+	/**如果1.inode关闭自动恢复或
+	 *     2.inode推荐keep size
+	 */
 	if (!is_inode_flag_set(inode, FI_AUTO_RECOVER) ||
 			file_keep_isize(inode) ||
 			i_size_read(inode) & ~PAGE_MASK)

@@ -240,34 +240,58 @@ static void try_to_fix_pino(struct inode *inode)
 	up_write(&fi->i_sem);
 }
 
+/**
+ * f2fs的fsync内部实际逻辑实现
+ * 同样的datasync即为判定fsync还是fdatasync
+*/
 static int f2fs_do_sync_file(struct file *file, loff_t start, loff_t end,
 						int datasync, bool atomic)
-{
+{	
+
+	//找到文件的宿主inode
 	struct inode *inode = file->f_mapping->host;
+	//获取f2fs_sb_info
 	struct f2fs_sb_info *sbi = F2FS_I_SB(inode);
+	//获取inode ino号
 	nid_t ino = inode->i_ino;
+
 	int ret = 0;
 	enum cp_reason_type cp_reason = 0;
+	
+	/**vfs层的写回控制结构体，与wb_writeback_work相关
+	 * 在整个写回框架中会将每个任务分解成多个子任务，每个子任务完成特定数量的脏页回写，
+	 * 通过循环来控制任务的完成进度，一个任务使用wb_writeback_work来描述
+	 * 而每个子任务使用writeback_control结构体来描述
+	 * 拆成多个子任务的目的，可能还是说把一段长时间的对inode的锁占用，拆分成多个短时间的inode所占用，来提升公平性和效率
+	*/
 	struct writeback_control wbc = {
-		.sync_mode = WB_SYNC_ALL,
+		.sync_mode = WB_SYNC_ALL, 	//确定sync模式为WB_SYNC_ALL,代表为了数据完整性的回写，需要等待回写任务完成才可以返回
 		.nr_to_write = LONG_MAX,
 		.for_reclaim = 0,
 	};
 	unsigned int seq_id = 0;
 
+	//如果只读模式和禁止CP，那么直接返回
 	if (unlikely(f2fs_readonly(inode->i_sb) ||
 				is_sbi_flag_set(sbi, SBI_CP_DISABLED)))
 		return 0;
 
 	trace_f2fs_sync_file_enter(inode);
 
+	//如果是目录inode，直接进入go_write
 	if (S_ISDIR(inode->i_mode))
 		goto go_write;
 
-	/* if fdatasync is triggered, let's do in-place-update */
+	/** if fdatasync is triggered, let's do in-place-update 
+	 * 如果开启了datasync模式 ,且脏页数量小于等于fsync的最小数量
+	 * 那么使用就地更新？
+	*/
 	if (datasync || get_dirty_pages(inode) <= SM_I(sbi)->min_fsync_blocks)
 		set_inode_flag(inode, FI_NEED_IPU);
+
+	//进行data部分写回	
 	ret = file_write_and_wait_range(file, start, end);
+	//清空flag
 	clear_inode_flag(inode, FI_NEED_IPU);
 
 	if (ret) {
@@ -369,6 +393,10 @@ out:
 	return ret;
 }
 
+/**
+ * f2fs的fsync实现，注意与sync的不同,fsync是与文件相关的，而sync是内核页缓冲所有页
+ * @param datasync f2fs sync的具体模式,也就是fsync还是fdatasync
+*/
 int f2fs_sync_file(struct file *file, loff_t start, loff_t end, int datasync)
 {
 	if (unlikely(f2fs_cp_error(F2FS_I_SB(file_inode(file)))))

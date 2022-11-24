@@ -1714,6 +1714,10 @@ static int f2fs_write_node_page(struct page *page,
 						FS_NODE_IO, NULL);
 }
 
+/**
+ * 推测与项目相关
+ * f2fs 持久化node page
+*/
 int f2fs_fsync_node_pages(struct f2fs_sb_info *sbi, struct inode *inode,
 			struct writeback_control *wbc, bool atomic,
 			unsigned int *seq_id)

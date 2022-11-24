@@ -402,6 +402,8 @@ static int filemap_check_and_keep_errors(struct address_space *mapping)
  * be waited upon, and not just skipped over.
  *
  * Return: %0 on success, negative error code otherwise.
+ * 
+ * 开始写回文件范围内的脏页
  */
 int __filemap_fdatawrite_range(struct address_space *mapping, loff_t start,
 				loff_t end, int sync_mode)
@@ -417,9 +419,11 @@ int __filemap_fdatawrite_range(struct address_space *mapping, loff_t start,
 	if (!mapping_can_writeback(mapping) ||
 	    !mapping_tagged(mapping, PAGECACHE_TAG_DIRTY))
 		return 0;
-
+	//设置wbc的inode
 	wbc_attach_fdatawrite_inode(&wbc, mapping->host);
+	//进行写回操作
 	ret = do_writepages(mapping, &wbc);
+	//wbc分离inode
 	wbc_detach_inode(&wbc);
 	return ret;
 }
@@ -624,7 +628,9 @@ int filemap_fdatawait_keep_errors(struct address_space *mapping)
 }
 EXPORT_SYMBOL(filemap_fdatawait_keep_errors);
 
-/* Returns true if writeback might be needed or already in progress. */
+/** Returns true if writeback might be needed or already in progress. 
+ *  返回某一个文件是否需要写回，或者正在写回的过程中
+*/
 static bool mapping_needs_writeback(struct address_space *mapping)
 {
 	if (dax_mapping(mapping))
@@ -707,6 +713,7 @@ EXPORT_SYMBOL(__filemap_set_wb_err);
  * the latest value swapped in for this file descriptor.
  *
  * Return: %0 on success, negative error code otherwise.
+ * 检查file是否有写回错误，如果有则将之前的wb_err改为现在的值
  */
 int file_check_and_advance_wb_err(struct file *file)
 {
@@ -751,19 +758,24 @@ EXPORT_SYMBOL(file_check_and_advance_wb_err);
  * f_wb_err cursor to the latest value, and return any errors detected there.
  *
  * Return: %0 on success, negative error code otherwise.
+ * 
+ * 写回文件范围的数据，并且等待直到完成
  */
 int file_write_and_wait_range(struct file *file, loff_t lstart, loff_t lend)
 {
 	int err = 0, err2;
 	struct address_space *mapping = file->f_mapping;
-
+	//判定需要写回之后
 	if (mapping_needs_writeback(mapping)) {
+		//写回脏页
 		err = __filemap_fdatawrite_range(mapping, lstart, lend,
 						 WB_SYNC_ALL);
 		/* See comment of filemap_write_and_wait() */
 		if (err != -EIO)
+			//等待脏页写回完成
 			__filemap_fdatawait_range(mapping, lstart, lend);
 	}
+	//检查写回过程是否有错误
 	err2 = file_check_and_advance_wb_err(file);
 	if (!err)
 		err = err2;
