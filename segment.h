@@ -92,7 +92,7 @@ static inline void sanity_check_seg_type(struct f2fs_sb_info *sbi,
 #define NEXT_FREE_BLKADDR(sbi, curseg)					\
 	(START_BLOCK(sbi, (curseg)->segno) + (curseg)->next_blkoff)
 
-//获取seg相比seg0的逻辑块地址偏移量
+//获取seg相比seg0的main area起始逻辑块地址偏移量
 #define GET_SEGOFF_FROM_SEG0(sbi, blk_addr)	((blk_addr) - SEG0_BLKADDR(sbi))
 
 //获取逻辑块地址所属的段号
