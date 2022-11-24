@@ -283,7 +283,7 @@ static int f2fs_do_sync_file(struct file *file, loff_t start, loff_t end,
 		goto go_write;
 
 	/** if fdatasync is triggered, let's do in-place-update 
-	 * 如果开启了datasync模式 ,且脏页数量小于等于fsync的最小数量
+	 * 如果开启了datasync模式 或者脏页数量小于等于fsync的最小数量
 	 * 那么使用就地更新？
 	*/
 	if (datasync || get_dirty_pages(inode) <= SM_I(sbi)->min_fsync_blocks)
@@ -299,7 +299,9 @@ static int f2fs_do_sync_file(struct file *file, loff_t start, loff_t end,
 		return ret;
 	}
 
-	/* if the inode is dirty, let's recover all the time */
+	/** if the inode is dirty, let's recover all the time 
+	 * 判定是否可以跳过inode更新
+	*/
 	if (!f2fs_skip_inode_update(inode, datasync)) {
 		f2fs_write_inode(inode, NULL);
 		goto go_write;

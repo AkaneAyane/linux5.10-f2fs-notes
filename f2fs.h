@@ -781,7 +781,7 @@ struct f2fs_inode_info {
 	struct task_struct *task;	/* lookup and create consistency */
 	struct task_struct *cp_task;	/* separate cp/wb IO stats*/
 	nid_t i_xattr_nid;		/* node id that contains xattrs */
-	loff_t	last_disk_size;		/* lastly written file size */
+	loff_t	last_disk_size;		/* lastly written file size ，最近的已经写入磁盘的文件大小*/
 	spinlock_t i_size_lock;		/* protect last_disk_size */
 
 #ifdef CONFIG_QUOTA
@@ -807,8 +807,8 @@ struct f2fs_inode_info {
 	int i_extra_isize;		/* size of extra space located in i_addr */
 	kprojid_t i_projid;		/* id for project quota */
 	int i_inline_xattr_size;	/* inline xattr size */
-	struct timespec64 i_crtime;	/* inode creation time */
-	struct timespec64 i_disk_time[4];/* inode disk times */
+	struct timespec64 i_crtime;	/* inode creation time ,inode创建时间*/
+	struct timespec64 i_disk_time[4];/* inode disk times ，不同下标应该分别代表了a c m cr time*/
 
 	/* for file compress */
 	atomic_t i_compr_blocks;		/* # of compressed blocks */
@@ -3034,6 +3034,7 @@ static inline void clear_file(struct inode *inode, int type)
 	f2fs_mark_inode_dirty_sync(inode, true);
 }
 
+//判断inode的时间一致性
 static inline bool f2fs_is_time_consistent(struct inode *inode)
 {
 	if (!timespec64_equal(F2FS_I(inode)->i_disk_time, &inode->i_atime))
@@ -3068,16 +3069,21 @@ static inline bool f2fs_skip_inode_update(struct inode *inode, int dsync)
 	}
 	/**如果1.inode关闭自动恢复或
 	 *     2.inode推荐keep size
+	 * 	   3.inode的isize超过一页的数据量
 	 */
 	if (!is_inode_flag_set(inode, FI_AUTO_RECOVER) ||
 			file_keep_isize(inode) ||
 			i_size_read(inode) & ~PAGE_MASK)
 		return false;
 
+	/**
+	 * 如果inode的时间和inode的磁盘时间不一致那么也不能跳过
+	*/
 	if (!f2fs_is_time_consistent(inode))
 		return false;
 
 	spin_lock(&F2FS_I(inode)->i_size_lock);
+	//如果磁盘文件数据大小和inode记录的文件大小相等
 	ret = F2FS_I(inode)->last_disk_size == i_size_read(inode);
 	spin_unlock(&F2FS_I(inode)->i_size_lock);
 

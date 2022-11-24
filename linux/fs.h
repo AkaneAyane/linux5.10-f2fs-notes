@@ -642,9 +642,9 @@ struct inode {
 	};
 	dev_t			i_rdev;
 	loff_t			i_size;
-	struct timespec64	i_atime;
-	struct timespec64	i_mtime;
-	struct timespec64	i_ctime;
+	struct timespec64	i_atime;  //最近的一次访问(access)时间
+	struct timespec64	i_mtime;  //最近的一次修改(modification)文件时间
+	struct timespec64	i_ctime;  //最近的一次inode改变(change)的时间
 	spinlock_t		i_lock;	/* i_blocks, i_bytes, maybe i_size */
 	unsigned short          i_bytes;
 	u8			i_blkbits;
@@ -827,6 +827,7 @@ void unlock_two_nondirectories(struct inode *, struct inode*);
  * cmpxchg8b without the need of the lock prefix). For SMP compiles
  * and 64bit archs it makes no difference if preempt is enabled or not.
  */
+//获取inode结构的isize大小
 static inline loff_t i_size_read(const struct inode *inode)
 {
 #if BITS_PER_LONG==32 && defined(CONFIG_SMP)
