@@ -676,6 +676,7 @@ retry:
 	f2fs_put_page(node_page, 1);
 }
 
+//f2fs写入inode page
 int f2fs_write_inode(struct inode *inode, struct writeback_control *wbc)
 {
 	struct f2fs_sb_info *sbi = F2FS_I_SB(inode);
